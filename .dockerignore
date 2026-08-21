@@ -1,0 +1,17 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+fireblocks_*_private.key
+fireblocks_*.csr
+tmp/
+tmp-*.log
+.limiance-go-cache/
+coverage.out
+node_modules/
+dist/
+bin/
+Dockerfile*
+docker-compose*.yml
+*.md
