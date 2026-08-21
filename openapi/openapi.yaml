@@ -1,0 +1,128 @@
+openapi: 3.1.0
+info:
+  title: Limiance API
+  version: 0.1.0
+  description: Phase 1 exchange foundation API. All money-moving endpoints require Idempotency-Key.
+servers:
+  - url: https://api.limiance.example/v1
+paths:
+  /healthz:
+    get:
+      responses:
+        '200': { description: Process is healthy }
+  /auth/register:
+    post:
+      summary: Register an account
+      responses:
+        '202': { description: Verification challenge created }
+  /auth/login:
+    post:
+      summary: Log in with a verified account
+      responses:
+        '200': { description: Secure HTTP-only session cookie issued }
+        '401': { description: Invalid credentials }
+        '403': { description: Email verification is required }
+  /auth/email/verify:
+    post:
+      summary: Verify a pending registration email code
+      responses:
+        '200': { description: Account activated }
+        '400': { description: Invalid, expired, or exhausted code }
+  /auth/session:
+    get:
+      summary: Return the authenticated session identity
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: Authenticated identity }
+        '401': { description: No active session }
+  /auth/logout:
+    post:
+      summary: Revoke the current session
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: Session revoked }
+  /assets/catalog:
+    get:
+      summary: List approved assets and target networks
+      description: >-
+        Catalog entries are policy-approved only. Their pending statuses do not
+        represent enabled deposit, withdrawal, or trading routes.
+      responses:
+        '200':
+          description: Asset and network policy catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [assets, networks]
+                properties:
+                  assets:
+                    type: array
+                    items: { $ref: '#/components/schemas/CatalogItem' }
+                  networks:
+                    type: array
+                    items: { $ref: '#/components/schemas/CatalogItem' }
+  /kyc/sessions:
+    post:
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': { description: Sumsub verification session created }
+  /wallet/deposit-addresses:
+    post:
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': { description: Deposit address created or returned }
+  /transfers:
+    post:
+      summary: Transfer between permitted accounts or users
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201': { description: Transfer posted }
+  /conversions/quotes:
+    post:
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': { description: Short-lived conversion quote }
+  /conversions/{quoteId}/execute:
+    post:
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201': { description: Conversion posted }
+  /withdrawals:
+    post:
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202': { description: Withdrawal submitted for risk evaluation }
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 16, maxLength: 255 }
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: limiance_session
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    CatalogItem:
+      type: object
+      required: [code, display_name, status]
+      properties:
+        code: { type: string }
+        display_name: { type: string }
+        status:
+          type: string
+          enum:
+            - approved_pending_network_enablement
+            - approved_pending_custody_enablement

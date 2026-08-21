@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+# Locally generated Fireblocks API-user credentials. The private key must
+# never leave the development machine or be committed.
+fireblocks_*_private.key
+fireblocks_*.csr
+bin/
+coverage.out
+tmp/
+tmp-*.log
+.limiance-go-cache/

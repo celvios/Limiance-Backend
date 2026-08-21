@@ -1,0 +1,2 @@
+ALTER TABLE journals DROP COLUMN IF EXISTS transfer_id;
+DROP TABLE IF EXISTS transfers;

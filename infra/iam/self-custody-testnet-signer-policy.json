@@ -1,0 +1,22 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "UseOnlyTheDedicatedTestnetSigningKey",
+      "Effect": "Allow",
+      "Action": ["kms:Sign", "kms:GetPublicKey", "kms:DescribeKey"],
+      "Resource": "REPLACE_WITH_EU_CENTRAL_1_TESTNET_SIGNING_KEY_ARN",
+      "Condition": {
+        "ForAllValues:StringEquals": {
+          "kms:SigningAlgorithm": "ECDSA_SHA_256"
+        }
+      }
+    },
+    {
+      "Sid": "WriteSignerLogsOnly",
+      "Effect": "Allow",
+      "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+      "Resource": "REPLACE_WITH_SIGNER_LOG_GROUP_ARN:*"
+    }
+  ]
+}

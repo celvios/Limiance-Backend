@@ -1,0 +1,16 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyCustodySigningAndKeyMaterialAccess",
+      "Effect": "Deny",
+      "Action": [
+        "kms:Sign",
+        "kms:GetPublicKey",
+        "kms:Decrypt",
+        "kms:GenerateDataKey"
+      ],
+      "Resource": "REPLACE_WITH_EU_CENTRAL_1_TESTNET_SIGNING_KEY_ARN"
+    }
+  ]
+}

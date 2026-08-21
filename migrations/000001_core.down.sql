@@ -1,0 +1,10 @@
+DROP TABLE IF EXISTS audit_events;
+DROP TABLE IF EXISTS outbox_events;
+DROP TABLE IF EXISTS postings;
+DROP TABLE IF EXISTS journals;
+DROP TABLE IF EXISTS assets;
+DROP TABLE IF EXISTS accounts;
+DROP TABLE IF EXISTS users;
+DROP TYPE IF EXISTS journal_status;
+DROP TYPE IF EXISTS balance_bucket;
+DROP TYPE IF EXISTS account_kind;
