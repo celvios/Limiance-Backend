@@ -118,12 +118,21 @@ $Overrides = [pscustomobject]@{
     })
 } | ConvertTo-Json -Depth 10 -Compress
 
-$MigrationTaskArn = & $Aws ecs run-task --region $Region --cluster $Cluster --launch-type FARGATE --task-definition $TaskDefinitionArn --network-configuration $NetworkConfig --overrides $Overrides --query 'tasks[0].taskArn' --output text
-if ($LASTEXITCODE -ne 0) { throw 'Migration task did not start.' }
+$RunResult = & $Aws ecs run-task --region $Region --cluster $Cluster --launch-type FARGATE --task-definition $TaskDefinitionArn --network-configuration $NetworkConfig --overrides $Overrides --output json | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) { throw 'Migration task request failed.' }
+if (-not $RunResult.tasks -or $RunResult.tasks.Count -eq 0) {
+    $Failures = $RunResult.failures | ConvertTo-Json -Depth 10 -Compress
+    throw "Migration task did not start. ECS reported: $Failures"
+}
+$MigrationTaskArn = $RunResult.tasks[0].taskArn
 
 & $Aws ecs wait tasks-stopped --region $Region --cluster $Cluster --tasks $MigrationTaskArn
-$ExitCode = & $Aws ecs describe-tasks --region $Region --cluster $Cluster --tasks $MigrationTaskArn --query 'tasks[0].containers[0].exitCode' --output text
-if ($ExitCode -ne '0') { throw "Migration failed with exit code $ExitCode. Check $LogGroup." }
+$MigrationStatus = & $Aws ecs describe-tasks --region $Region --cluster $Cluster --tasks $MigrationTaskArn --output json | ConvertFrom-Json
+$ExitCode = $MigrationStatus.tasks[0].containers[0].exitCode
+if ($ExitCode -ne 0) {
+    $StoppedReason = $MigrationStatus.tasks[0].stoppedReason
+    throw "Migration failed with exit code $ExitCode. ECS stopped reason: $StoppedReason. Check $LogGroup."
+}
 
 $ServiceStatus = & $Aws ecs describe-services --region $Region --cluster $Cluster --services $Service --query 'services[0].status' --output text 2>$null
 if ($ServiceStatus -eq 'ACTIVE') {
