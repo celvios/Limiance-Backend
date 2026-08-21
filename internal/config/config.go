@@ -3,6 +3,8 @@ package config
 import (
 	"bufio"
 	"log/slog"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -60,7 +62,7 @@ func Load() Config {
 	return Config{
 		Environment:       value("APP_ENV", "development"),
 		HTTPAddress:       value("HTTP_ADDRESS", ":8080"),
-		DatabaseURL:       strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		DatabaseURL:       databaseURL(),
 		SumsubWebhookKey:  strings.TrimSpace(os.Getenv("SUMSUB_WEBHOOK_SECRET")),
 		SumsubAppToken:    strings.TrimSpace(os.Getenv("SUMSUB_APP_TOKEN")),
 		SumsubSecretKey:   strings.TrimSpace(os.Getenv("SUMSUB_SECRET_KEY")),
@@ -104,6 +106,34 @@ func Load() Config {
 		IdleTimeout:               durationValue("HTTP_IDLE_TIMEOUT", 60*time.Second),
 		LogLevel:                  logLevel(value("LOG_LEVEL", "info")),
 	}
+}
+
+// databaseURL supports the legacy DATABASE_URL setting and the individual
+// fields stored by the AWS-managed RDS secret. DATABASE_URL wins so existing
+// local development environments remain unchanged. ECS should inject the RDS
+// secret JSON keys as RDS_DB_HOST, RDS_DB_PORT, RDS_DB_USERNAME, and
+// RDS_DB_PASSWORD, plus RDS_DB_NAME=limiance. Building the URL here avoids
+// copying a generated RDS password into a second secret or mishandling URL
+// reserved characters in that password.
+func databaseURL() string {
+	if raw := strings.TrimSpace(os.Getenv("DATABASE_URL")); raw != "" {
+		return raw
+	}
+	host := strings.TrimSpace(os.Getenv("RDS_DB_HOST"))
+	username := strings.TrimSpace(os.Getenv("RDS_DB_USERNAME"))
+	password := os.Getenv("RDS_DB_PASSWORD")
+	if host == "" || username == "" || password == "" {
+		return ""
+	}
+	port := value("RDS_DB_PORT", "5432")
+	database := value("RDS_DB_NAME", "limiance")
+	return (&url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(username, password),
+		Host:     net.JoinHostPort(host, port),
+		Path:     database,
+		RawQuery: "sslmode=require",
+	}).String()
 }
 
 // loadDotEnv is a development convenience. Explicit process environment
