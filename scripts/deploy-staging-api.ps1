@@ -15,6 +15,7 @@ $ApiSecurityGroup = 'sg-0b6b43d8368e0db2a'
 $DatabaseInstance = 'limiance-staging'
 $ApplicationSecret = 'limiance/staging/app'
 $LogGroup = '/ecs/limiance-staging'
+$AllowedBrowserOrigins = 'https://limiance-main.vercel.app'
 $Aws = 'C:\Program Files\Amazon\AWSCLIV2\aws.exe'
 
 if (-not (Test-Path -LiteralPath $Aws)) {
@@ -72,6 +73,9 @@ $Container = [pscustomobject]@{
     environment = @(
         [pscustomobject]@{ name = 'RDS_DB_HOST'; value = $RdsHost },
         [pscustomobject]@{ name = 'RDS_DB_PORT'; value = "$RdsPort" },
+		# Browser origins are public configuration. Keep the customer frontend
+		# explicit; the administrator application must use its own API/session.
+		[pscustomobject]@{ name = 'CORS_ALLOWED_ORIGINS'; value = $AllowedBrowserOrigins },
         # RDS created without an initial database supplies the default postgres
         # database. Staging uses it until a dedicated application database is
         # provisioned through a controlled migration/admin task.

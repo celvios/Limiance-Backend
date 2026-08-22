@@ -18,6 +18,7 @@ type AuthHandler struct {
 	service      *auth.Service
 	logger       *slog.Logger
 	secureCookie bool
+	sameSite     http.SameSite
 }
 
 type EmailVerificationHandler struct {
@@ -74,7 +75,13 @@ func (h *EmailVerificationHandler) Resend(w http.ResponseWriter, r *http.Request
 }
 
 func NewAuthHandler(service *auth.Service, logger *slog.Logger, secureCookie bool) *AuthHandler {
-	return &AuthHandler{service: service, logger: logger, secureCookie: secureCookie}
+	sameSite := http.SameSiteStrictMode
+	if secureCookie {
+		// The deployed Vercel frontends are cross-site relative to the API.
+		// SameSite=None is necessary for fetch(..., {credentials: "include"}).
+		sameSite = http.SameSiteNoneMode
+	}
+	return &AuthHandler{service: service, logger: logger, secureCookie: secureCookie, sameSite: sameSite}
 }
 
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
@@ -106,16 +113,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    result.Token,
-		Path:     "/",
-		Expires:  result.ExpiresAt,
-		MaxAge:   int(time.Until(result.ExpiresAt).Seconds()),
-		HttpOnly: true,
-		Secure:   h.secureCookie,
-		SameSite: http.SameSiteStrictMode,
-	})
+	h.setSessionCookie(w, result)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "authenticated"})
 }
 
@@ -215,7 +213,11 @@ func (h *AuthHandler) updateTOTP(w http.ResponseWriter, r *http.Request, enable 
 }
 
 func (h *AuthHandler) setSessionCookie(w http.ResponseWriter, result auth.LoginResult) {
-	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: result.Token, Path: "/", Expires: result.ExpiresAt, MaxAge: int(time.Until(result.ExpiresAt).Seconds()), HttpOnly: true, Secure: h.secureCookie, SameSite: http.SameSiteStrictMode})
+	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: result.Token, Path: "/", Expires: result.ExpiresAt, MaxAge: int(time.Until(result.ExpiresAt).Seconds()), HttpOnly: true, Secure: h.secureCookie, SameSite: h.sameSite})
+}
+
+func (h *AuthHandler) clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: h.secureCookie, SameSite: h.sameSite})
 }
 
 func (h *AuthHandler) Session(w http.ResponseWriter, r *http.Request) {
@@ -260,7 +262,7 @@ func (h *AuthHandler) RevokeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if id == p.SessionID {
-		http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: h.secureCookie, SameSite: http.SameSiteStrictMode})
+		h.clearSessionCookie(w)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "revoked", "current": id == p.SessionID})
 }
@@ -318,7 +320,7 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "logout_failed"})
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: h.secureCookie, SameSite: http.SameSiteStrictMode})
+	h.clearSessionCookie(w)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged_out"})
 }
 
@@ -340,6 +342,6 @@ func (h *AuthHandler) Freeze(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "account_freeze_unavailable"})
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: h.secureCookie, SameSite: http.SameSiteStrictMode})
+	h.clearSessionCookie(w)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "account_frozen"})
 }

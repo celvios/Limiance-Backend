@@ -222,6 +222,16 @@ func (m *Manager) ConfirmConversion(ctx context.Context, userID, quoteID, idempo
 	if !expires.After(time.Now().UTC()) {
 		return ConversionResult{}, ErrConversionQuoteExpired
 	}
+	// A quote must not survive a subsequent operator decision to disable its
+	// asset pair. The quote remains auditable, but cannot settle after the
+	// pair has been removed from the approved conversion universe.
+	var pairEnabled bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM conversion_pairs WHERE from_asset_id=$1 AND to_asset_id=$2 AND status='enabled')`, fromID, toID).Scan(&pairEnabled); err != nil || !pairEnabled {
+		if err != nil {
+			return ConversionResult{}, err
+		}
+		return ConversionResult{}, ErrConversionQuoteNotConfirmable
+	}
 	var sourceActive bool
 	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM accounts WHERE id=$1 AND user_id=$2 AND status='active')`, sourceID, userID).Scan(&sourceActive); err != nil || !sourceActive {
 		return ConversionResult{}, ErrConversionQuoteNotConfirmable

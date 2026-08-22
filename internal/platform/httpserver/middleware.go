@@ -6,8 +6,23 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"time"
 )
+
+var allowedCORSMethods = map[string]struct{}{
+	http.MethodGet:     {},
+	http.MethodPost:    {},
+	http.MethodPut:     {},
+	http.MethodDelete:  {},
+	http.MethodOptions: {},
+}
+
+var allowedCORSHeaders = map[string]struct{}{
+	"content-type":    {},
+	"idempotency-key": {},
+	"x-request-id":    {},
+}
 
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -17,6 +32,103 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// customerCORS provides credentialed browser access only to the deployed
+// customer and operations frontends. Cookie-authenticated CORS must always
+// reflect an explicit, trusted origin; a wildcard is unsafe and invalid with
+// credentials.
+func customerCORS(allowedOrigins []string, next http.Handler) http.Handler {
+	origins := originSet(allowedOrigins)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !isAllowedBrowserOrigin(origins, origin) {
+			if isPreflight(r) {
+				http.Error(w, "cors origin denied", http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Add("Vary", "Origin")
+		if !isPreflight(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		requestedMethod := r.Header.Get("Access-Control-Request-Method")
+		if _, ok := allowedCORSMethods[requestedMethod]; !ok {
+			http.Error(w, "cors method denied", http.StatusForbidden)
+			return
+		}
+		if !allowedRequestedHeaders(r.Header.Get("Access-Control-Request-Headers")) {
+			http.Error(w, "cors header denied", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, X-Request-ID")
+		w.Header().Set("Access-Control-Max-Age", "600")
+		w.Header().Add("Vary", "Access-Control-Request-Method")
+		w.Header().Add("Vary", "Access-Control-Request-Headers")
+		w.WriteHeader(http.StatusNoContent)
+	})
+}
+
+// csrfOriginCheck stops cross-site form submissions when cross-site session
+// cookies are required by the deployed Vercel frontends. Non-browser clients
+// may omit Origin and continue to use the API directly.
+func csrfOriginCheck(allowedOrigins []string, next http.Handler) http.Handler {
+	origins := originSet(allowedOrigins)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isUnsafeMethod(r.Method) {
+			if origin := r.Header.Get("Origin"); origin != "" && !isAllowedBrowserOrigin(origins, origin) {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "origin_denied"})
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func originSet(allowedOrigins []string) map[string]struct{} {
+	origins := make(map[string]struct{}, len(allowedOrigins))
+	for _, origin := range allowedOrigins {
+		origins[origin] = struct{}{}
+	}
+	return origins
+}
+
+func isAllowedBrowserOrigin(origins map[string]struct{}, origin string) bool {
+	_, ok := origins[origin]
+	return ok
+}
+
+func isPreflight(r *http.Request) bool {
+	return r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != ""
+}
+
+func allowedRequestedHeaders(headers string) bool {
+	for _, header := range strings.Split(headers, ",") {
+		header = strings.TrimSpace(strings.ToLower(header))
+		if header == "" {
+			continue
+		}
+		if _, ok := allowedCORSHeaders[header]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func isUnsafeMethod(method string) bool {
+	return method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions
 }
 
 func requestID(logger *slog.Logger) func(http.Handler) http.Handler {

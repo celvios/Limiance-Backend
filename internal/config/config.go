@@ -16,6 +16,7 @@ import (
 type Config struct {
 	Environment               string
 	HTTPAddress               string
+	AllowedBrowserOrigins     []string
 	DatabaseURL               string
 	SumsubWebhookKey          string
 	SumsubAppToken            string
@@ -61,15 +62,16 @@ type Config struct {
 func Load() Config {
 	loadDotEnv()
 	return Config{
-		Environment:       value("APP_ENV", "development"),
-		HTTPAddress:       value("HTTP_ADDRESS", ":8080"),
-		DatabaseURL:       databaseURL(),
-		SumsubWebhookKey:  strings.TrimSpace(os.Getenv("SUMSUB_WEBHOOK_SECRET")),
-		SumsubAppToken:    strings.TrimSpace(os.Getenv("SUMSUB_APP_TOKEN")),
-		SumsubSecretKey:   strings.TrimSpace(os.Getenv("SUMSUB_SECRET_KEY")),
-		SumsubLevelName:   value("SUMSUB_LEVEL_NAME", ""),
-		FireblocksWebhook: strings.TrimSpace(os.Getenv("FIREBLOCKS_WEBHOOK_SECRET")),
-		FireblocksAPIKey:  strings.TrimSpace(os.Getenv("FIREBLOCKS_API_KEY")),
+		Environment:           value("APP_ENV", "development"),
+		HTTPAddress:           value("HTTP_ADDRESS", ":8080"),
+		AllowedBrowserOrigins: originList(os.Getenv("CORS_ALLOWED_ORIGINS")),
+		DatabaseURL:           databaseURL(),
+		SumsubWebhookKey:      strings.TrimSpace(os.Getenv("SUMSUB_WEBHOOK_SECRET")),
+		SumsubAppToken:        strings.TrimSpace(os.Getenv("SUMSUB_APP_TOKEN")),
+		SumsubSecretKey:       strings.TrimSpace(os.Getenv("SUMSUB_SECRET_KEY")),
+		SumsubLevelName:       value("SUMSUB_LEVEL_NAME", ""),
+		FireblocksWebhook:     strings.TrimSpace(os.Getenv("FIREBLOCKS_WEBHOOK_SECRET")),
+		FireblocksAPIKey:      strings.TrimSpace(os.Getenv("FIREBLOCKS_API_KEY")),
 		// .env values are single-line. Permit a PEM represented with literal
 		// "\\n" separators, while still accepting a normal multiline PEM injected
 		// by a production secret manager.
@@ -107,6 +109,27 @@ func Load() Config {
 		IdleTimeout:               durationValue("HTTP_IDLE_TIMEOUT", 60*time.Second),
 		LogLevel:                  logLevel(value("LOG_LEVEL", "info")),
 	}
+}
+
+// originList accepts a comma-separated explicit allowlist of browser origins.
+// Origins are configuration, not user input: empty or malformed values are
+// ignored so a wildcard can never be introduced accidentally.
+func originList(raw string) []string {
+	seen := make(map[string]struct{})
+	origins := make([]string, 0)
+	for _, item := range strings.Split(raw, ",") {
+		origin := strings.TrimSpace(item)
+		parsed, err := url.Parse(origin)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+			continue
+		}
+		if _, exists := seen[origin]; exists {
+			continue
+		}
+		seen[origin] = struct{}{}
+		origins = append(origins, origin)
+	}
+	return origins
 }
 
 // databaseURL supports the legacy DATABASE_URL setting and the individual
