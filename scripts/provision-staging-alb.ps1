@@ -4,6 +4,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Native AWS CLI errors are handled explicitly below through $LASTEXITCODE.
+$PSNativeCommandUseErrorActionPreference = $false
 
 $Region = 'eu-north-1'
 $Cluster = 'limiance-staging'
@@ -22,8 +24,19 @@ if (-not (Test-Path -LiteralPath $Aws)) {
 function Invoke-Aws {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
 
-    $result = & $Aws @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    # PowerShell 7 can turn native stderr into a terminating error before we
+    # can inspect the AWS CLI exit code. Handle it ourselves so failures retain
+    # the actual AWS diagnostic.
+    $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+    $PSNativeCommandUseErrorActionPreference = $false
+    try {
+        $result = & $Aws @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+    }
+    if ($exitCode -ne 0) {
         throw "AWS command failed: $($Arguments -join ' ')`n$result"
     }
     return $result
