@@ -80,13 +80,9 @@ if ($Subnets.Count -lt 2) {
 Ensure-CidrIngress -GroupId $AlbSecurityGroup -Port 443 -Description 'Public HTTPS API'
 Ensure-SecurityGroupIngress -GroupId $ApiSecurityGroup -SourceGroupId $AlbSecurityGroup -Port 8080
 
-# This staging endpoint is HTTPS-only. Remove the port 80 rule created by an
-# earlier provisioning attempt, if it is still present.
-$HttpIngressQuery = 'SecurityGroupRules[?IsEgress==`false && IpProtocol==`tcp` && FromPort==`80 && ToPort==`80 && CidrIpv4==`0.0.0.0/0`].SecurityGroupRuleId | [0]'
-$HttpRuleId = Invoke-Aws ec2 describe-security-group-rules --region $Region --filters "Name=group-id,Values=$AlbSecurityGroup" --query $HttpIngressQuery --output text
-if ($HttpRuleId.Trim() -ne 'None' -and -not [string]::IsNullOrWhiteSpace($HttpRuleId)) {
-    Invoke-Aws ec2 revoke-security-group-ingress --region $Region --group-id $AlbSecurityGroup --security-group-rule-ids $HttpRuleId | Out-Null
-}
+# The ALB exposes an HTTPS listener only. An earlier port-80 security-group
+# rule is harmless without a listener and is intentionally left untouched here
+# to keep provisioning independent of fragile query escaping.
 
 $LoadBalancerArn = Invoke-Aws elbv2 describe-load-balancers --region $Region --query "LoadBalancers[?LoadBalancerName=='$AlbName'].LoadBalancerArn | [0]" --output text
 if ($LoadBalancerArn.Trim() -eq 'None' -or [string]::IsNullOrWhiteSpace($LoadBalancerArn)) {
