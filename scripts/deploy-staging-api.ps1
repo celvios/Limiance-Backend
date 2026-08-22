@@ -137,4 +137,7 @@ else {
 }
 
 & $Aws ecs wait services-stable --region $Region --cluster $Cluster --services $Service
+if ($LASTEXITCODE -ne 0) {
+    throw 'ECS service did not reach a stable state. Re-authenticate with aws login, then inspect the service events and CloudWatch logs.'
+}
 Write-Host 'Migration succeeded. Two API tasks are running.'
