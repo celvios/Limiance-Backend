@@ -83,7 +83,10 @@ Ensure-SecurityGroupIngress -GroupId $ApiSecurityGroup -SourceGroupId $AlbSecuri
 
 $LoadBalancerArn = Invoke-Aws elbv2 describe-load-balancers --region $Region --query "LoadBalancers[?LoadBalancerName=='$AlbName'].LoadBalancerArn | [0]" --output text
 if ($LoadBalancerArn.Trim() -eq 'None' -or [string]::IsNullOrWhiteSpace($LoadBalancerArn)) {
-    $LoadBalancerArn = Invoke-Aws elbv2 create-load-balancer --region $Region --name $AlbName --subnets $Subnets --security-groups $AlbSecurityGroup --scheme internet-facing --type application --ip-address-type ipv4 --query 'LoadBalancers[0].LoadBalancerArn' --output text
+    # Pass each subnet as a distinct argument. Passing the array directly
+    # through the helper causes Windows PowerShell to combine it into one
+    # invalid subnet ID.
+    $LoadBalancerArn = Invoke-Aws elbv2 create-load-balancer --region $Region --name $AlbName --subnets $Subnets[0] $Subnets[1] --security-groups $AlbSecurityGroup --scheme internet-facing --type application --ip-address-type ipv4 --query 'LoadBalancers[0].LoadBalancerArn' --output text
 }
 
 $TargetGroupArn = Invoke-Aws elbv2 describe-target-groups --region $Region --query "TargetGroups[?TargetGroupName=='$TargetGroupName'].TargetGroupArn | [0]" --output text
