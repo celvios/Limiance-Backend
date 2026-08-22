@@ -101,8 +101,28 @@ if ($HttpsListenerArn.Trim() -eq 'None' -or [string]::IsNullOrWhiteSpace($HttpsL
 
 $HttpListenerArn = Invoke-Aws elbv2 describe-listeners --region $Region --load-balancer-arn $LoadBalancerArn --query 'Listeners[?Port==`80`].ListenerArn | [0]' --output text
 if ($HttpListenerArn.Trim() -eq 'None' -or [string]::IsNullOrWhiteSpace($HttpListenerArn)) {
-    $redirectAction = 'Type=redirect,RedirectConfig={Protocol=HTTPS,Port=443,Host=#{host},Path=/#{path},Query=#{query},StatusCode=HTTP_301}'
-    Invoke-Aws elbv2 create-listener --region $Region --load-balancer-arn $LoadBalancerArn --protocol HTTP --port 80 --default-actions $redirectAction | Out-Null
+    # Use JSON rather than AWS CLI shorthand for the nested redirect action;
+    # PowerShell and the CLI shorthand parser otherwise disagree about braces.
+    $redirectActionFile = New-TemporaryFile
+    try {
+        @(
+            [pscustomobject]@{
+                Type = 'redirect'
+                RedirectConfig = [pscustomobject]@{
+                    Protocol = 'HTTPS'
+                    Port = '443'
+                    Host = '#{host}'
+                    Path = '/#{path}'
+                    Query = '#{query}'
+                    StatusCode = 'HTTP_301'
+                }
+            }
+        ) | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $redirectActionFile -NoNewline
+        Invoke-Aws elbv2 create-listener --region $Region --load-balancer-arn $LoadBalancerArn --protocol HTTP --port 80 --default-actions "file://$redirectActionFile" | Out-Null
+    }
+    finally {
+        Remove-Item -LiteralPath $redirectActionFile -ErrorAction SilentlyContinue
+    }
 }
 
 $loadBalancer = "targetGroupArn=$TargetGroupArn,containerName=limiance-api,containerPort=8080"
