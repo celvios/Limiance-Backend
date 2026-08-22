@@ -72,7 +72,10 @@ $Container = [pscustomobject]@{
     environment = @(
         [pscustomobject]@{ name = 'RDS_DB_HOST'; value = $RdsHost },
         [pscustomobject]@{ name = 'RDS_DB_PORT'; value = "$RdsPort" },
-        [pscustomobject]@{ name = 'RDS_DB_NAME'; value = 'limiance' }
+        # RDS created without an initial database supplies the default postgres
+        # database. Staging uses it until a dedicated application database is
+        # provisioned through a controlled migration/admin task.
+        [pscustomobject]@{ name = 'RDS_DB_NAME'; value = 'postgres' }
     )
     secrets = @($Secrets)
     logConfiguration = [pscustomobject]@{
