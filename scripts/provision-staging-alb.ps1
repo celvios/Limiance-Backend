@@ -77,9 +77,16 @@ if ($Subnets.Count -lt 2) {
     throw 'The VPC needs at least two subnets in different Availability Zones for an ALB.'
 }
 
-Ensure-CidrIngress -GroupId $AlbSecurityGroup -Port 80 -Description 'HTTP redirect to HTTPS'
 Ensure-CidrIngress -GroupId $AlbSecurityGroup -Port 443 -Description 'Public HTTPS API'
 Ensure-SecurityGroupIngress -GroupId $ApiSecurityGroup -SourceGroupId $AlbSecurityGroup -Port 8080
+
+# This staging endpoint is HTTPS-only. Remove the port 80 rule created by an
+# earlier provisioning attempt, if it is still present.
+$HttpIngressQuery = 'SecurityGroupRules[?IsEgress==`false && IpProtocol==`tcp` && FromPort==`80 && ToPort==`80 && CidrIpv4==`0.0.0.0/0`].SecurityGroupRuleId | [0]'
+$HttpRuleId = Invoke-Aws ec2 describe-security-group-rules --region $Region --filters "Name=group-id,Values=$AlbSecurityGroup" --query $HttpIngressQuery --output text
+if ($HttpRuleId.Trim() -ne 'None' -and -not [string]::IsNullOrWhiteSpace($HttpRuleId)) {
+    Invoke-Aws ec2 revoke-security-group-ingress --region $Region --group-id $AlbSecurityGroup --security-group-rule-ids $HttpRuleId | Out-Null
+}
 
 $LoadBalancerArn = Invoke-Aws elbv2 describe-load-balancers --region $Region --query "LoadBalancers[?LoadBalancerName=='$AlbName'].LoadBalancerArn | [0]" --output text
 if ($LoadBalancerArn.Trim() -eq 'None' -or [string]::IsNullOrWhiteSpace($LoadBalancerArn)) {
@@ -97,35 +104,6 @@ if ($TargetGroupArn.Trim() -eq 'None' -or [string]::IsNullOrWhiteSpace($TargetGr
 $HttpsListenerArn = Invoke-Aws elbv2 describe-listeners --region $Region --load-balancer-arn $LoadBalancerArn --query 'Listeners[?Port==`443`].ListenerArn | [0]' --output text
 if ($HttpsListenerArn.Trim() -eq 'None' -or [string]::IsNullOrWhiteSpace($HttpsListenerArn)) {
     Invoke-Aws elbv2 create-listener --region $Region --load-balancer-arn $LoadBalancerArn --protocol HTTPS --port 443 --certificates "CertificateArn=$CertificateArn" --ssl-policy 'ELBSecurityPolicy-TLS13-1-2-2021-06' --default-actions "Type=forward,TargetGroupArn=$TargetGroupArn" | Out-Null
-}
-
-$HttpListenerArn = Invoke-Aws elbv2 describe-listeners --region $Region --load-balancer-arn $LoadBalancerArn --query 'Listeners[?Port==`80`].ListenerArn | [0]' --output text
-if ($HttpListenerArn.Trim() -eq 'None' -or [string]::IsNullOrWhiteSpace($HttpListenerArn)) {
-    # Use JSON rather than AWS CLI shorthand for the nested redirect action;
-    # PowerShell and the CLI shorthand parser otherwise disagree about braces.
-    $redirectActionFile = New-TemporaryFile
-    try {
-        $redirectActionJson = @(
-            [pscustomobject]@{
-                Type = 'redirect'
-                RedirectConfig = [pscustomobject]@{
-                    Protocol = 'HTTPS'
-                    Port = '443'
-                    Host = '#{host}'
-                    Path = '/#{path}'
-                    Query = '#{query}'
-                    StatusCode = 'HTTP_301'
-                }
-            }
-        ) | ConvertTo-Json -Depth 5
-        # Windows PowerShell defaults Set-Content to UTF-16; AWS CLI JSON
-        # parameter files must be UTF-8.
-        [System.IO.File]::WriteAllText($redirectActionFile, $redirectActionJson, [System.Text.UTF8Encoding]::new($false))
-        Invoke-Aws elbv2 create-listener --region $Region --load-balancer-arn $LoadBalancerArn --protocol HTTP --port 80 --default-actions "file://$redirectActionFile" | Out-Null
-    }
-    finally {
-        Remove-Item -LiteralPath $redirectActionFile -ErrorAction SilentlyContinue
-    }
 }
 
 $loadBalancer = "targetGroupArn=$TargetGroupArn,containerName=limiance-api,containerPort=8080"
