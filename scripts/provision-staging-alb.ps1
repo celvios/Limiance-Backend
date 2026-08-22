@@ -105,7 +105,7 @@ if ($HttpListenerArn.Trim() -eq 'None' -or [string]::IsNullOrWhiteSpace($HttpLis
     # PowerShell and the CLI shorthand parser otherwise disagree about braces.
     $redirectActionFile = New-TemporaryFile
     try {
-        @(
+        $redirectActionJson = @(
             [pscustomobject]@{
                 Type = 'redirect'
                 RedirectConfig = [pscustomobject]@{
@@ -117,7 +117,10 @@ if ($HttpListenerArn.Trim() -eq 'None' -or [string]::IsNullOrWhiteSpace($HttpLis
                     StatusCode = 'HTTP_301'
                 }
             }
-        ) | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $redirectActionFile -NoNewline
+        ) | ConvertTo-Json -Depth 5
+        # Windows PowerShell defaults Set-Content to UTF-16; AWS CLI JSON
+        # parameter files must be UTF-8.
+        [System.IO.File]::WriteAllText($redirectActionFile, $redirectActionJson, [System.Text.UTF8Encoding]::new($false))
         Invoke-Aws elbv2 create-listener --region $Region --load-balancer-arn $LoadBalancerArn --protocol HTTP --port 80 --default-actions "file://$redirectActionFile" | Out-Null
     }
     finally {
