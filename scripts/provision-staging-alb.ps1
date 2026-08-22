@@ -4,8 +4,6 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-# Native AWS CLI errors are handled explicitly below through $LASTEXITCODE.
-$PSNativeCommandUseErrorActionPreference = $false
 
 $Region = 'eu-north-1'
 $Cluster = 'limiance-staging'
@@ -22,22 +20,28 @@ if (-not (Test-Path -LiteralPath $Aws)) {
 }
 
 function Invoke-Aws {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+    param(
+        [switch]$AllowDuplicatePermission,
+        [Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments
+    )
 
-    # PowerShell 7 can turn native stderr into a terminating error before we
-    # can inspect the AWS CLI exit code. Handle it ourselves so failures retain
-    # the actual AWS diagnostic.
-    $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
-    $PSNativeCommandUseErrorActionPreference = $false
+    # Redirect stderr to a file instead of the PowerShell error stream. This
+    # prevents Windows PowerShell and PowerShell 7 from terminating early and
+    # lets us show the original AWS CLI diagnostic when a command fails.
+    $stderrFile = New-TemporaryFile
     try {
-        $result = & $Aws @Arguments 2>&1
+        $result = & $Aws @Arguments 2>$stderrFile
         $exitCode = $LASTEXITCODE
+        $stderr = Get-Content -LiteralPath $stderrFile -Raw
     }
     finally {
-        $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        Remove-Item -LiteralPath $stderrFile -ErrorAction SilentlyContinue
+    }
+    if ($AllowDuplicatePermission -and $exitCode -ne 0 -and $stderr -match 'InvalidPermission.Duplicate') {
+        return
     }
     if ($exitCode -ne 0) {
-        throw "AWS command failed: $($Arguments -join ' ')`n$result"
+        throw "AWS command failed: $($Arguments -join ' ')`n$stderr"
     }
     return $result
 }
@@ -45,20 +49,14 @@ function Invoke-Aws {
 function Ensure-CidrIngress {
     param([string]$GroupId, [int]$Port, [string]$Description)
 
-    $result = & $Aws ec2 authorize-security-group-ingress --region $Region --group-id $GroupId --protocol tcp --port $Port --cidr '0.0.0.0/0' 2>&1
-    if ($LASTEXITCODE -ne 0 -and "$result" -notmatch 'InvalidPermission.Duplicate') {
-        throw "Could not allow TCP $Port on $GroupId.`n$result"
-    }
+    Invoke-Aws -AllowDuplicatePermission ec2 authorize-security-group-ingress --region $Region --group-id $GroupId --protocol tcp --port $Port --cidr '0.0.0.0/0' | Out-Null
 }
 
 function Ensure-SecurityGroupIngress {
     param([string]$GroupId, [string]$SourceGroupId, [int]$Port)
 
     $permission = "IpProtocol=tcp,FromPort=$Port,ToPort=$Port,UserIdGroupPairs=[{GroupId=$SourceGroupId,Description='ALB to ECS API only'}]"
-    $result = & $Aws ec2 authorize-security-group-ingress --region $Region --group-id $GroupId --ip-permissions $permission 2>&1
-    if ($LASTEXITCODE -ne 0 -and "$result" -notmatch 'InvalidPermission.Duplicate') {
-        throw "Could not allow the ALB to reach the API on port $Port.`n$result"
-    }
+    Invoke-Aws -AllowDuplicatePermission ec2 authorize-security-group-ingress --region $Region --group-id $GroupId --ip-permissions $permission | Out-Null
 }
 
 $CertificateStatus = Invoke-Aws acm describe-certificate --region $Region --certificate-arn $CertificateArn --query 'Certificate.Status' --output text
