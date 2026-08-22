@@ -59,13 +59,10 @@ foreach ($Key in $AppSecretKeys) {
         valueFrom = "${AppSecretArn}:$Key`::"
     })
 }
-foreach ($Field in @('username', 'password')) {
-    $Name = "RDS_DB_$($Field.ToUpper())"
-    $Secrets.Add([pscustomobject]@{
-        name = $Name
-        valueFrom = "${RdsSecretArn}:$Field`::"
-    })
-}
+$Secrets.Add([pscustomobject]@{
+    name = 'RDS_SECRET_JSON'
+    valueFrom = $RdsSecretArn
+})
 
 $Container = [pscustomobject]@{
     name = 'limiance-api'

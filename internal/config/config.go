@@ -2,6 +2,7 @@ package config
 
 import (
 	"bufio"
+	"encoding/json"
 	"log/slog"
 	"net"
 	"net/url"
@@ -122,6 +123,16 @@ func databaseURL() string {
 	host := strings.TrimSpace(os.Getenv("RDS_DB_HOST"))
 	username := strings.TrimSpace(os.Getenv("RDS_DB_USERNAME"))
 	password := os.Getenv("RDS_DB_PASSWORD")
+	if (username == "" || password == "") && strings.TrimSpace(os.Getenv("RDS_SECRET_JSON")) != "" {
+		var secret struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		}
+		if err := json.Unmarshal([]byte(os.Getenv("RDS_SECRET_JSON")), &secret); err == nil {
+			username = strings.TrimSpace(secret.Username)
+			password = secret.Password
+		}
+	}
 	if host == "" || username == "" || password == "" {
 		return ""
 	}

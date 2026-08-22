@@ -27,3 +27,19 @@ func TestDatabaseURLTakesPrecedence(t *testing.T) {
 		t.Fatalf("databaseURL() = %q", got)
 	}
 }
+
+func TestDatabaseURLFromRDSSecretJSON(t *testing.T) {
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("RDS_DB_HOST", "limiance.example.rds.amazonaws.com")
+	t.Setenv("RDS_DB_PORT", "5432")
+	t.Setenv("RDS_DB_NAME", "limiance")
+	t.Setenv("RDS_DB_USERNAME", "")
+	t.Setenv("RDS_DB_PASSWORD", "")
+	t.Setenv("RDS_SECRET_JSON", `{"username":"limiance","password":"p@ss:/word"}`)
+
+	got := databaseURL()
+	want := "postgres://limiance:p%40ss%3A%2Fword@limiance.example.rds.amazonaws.com:5432/limiance?sslmode=require"
+	if got != want {
+		t.Fatalf("databaseURL() = %q, want %q", got, want)
+	}
+}
