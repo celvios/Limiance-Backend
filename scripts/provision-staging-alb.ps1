@@ -29,12 +29,18 @@ function Invoke-Aws {
     # prevents Windows PowerShell and PowerShell 7 from terminating early and
     # lets us show the original AWS CLI diagnostic when a command fails.
     $stderrFile = New-TemporaryFile
+    $previousErrorActionPreference = $ErrorActionPreference
     try {
+        # Some PowerShell installations promote non-zero native exit codes to
+        # NativeCommandError when ErrorActionPreference is Stop. We evaluate
+        # the exit code immediately below instead.
+        $ErrorActionPreference = 'Continue'
         $result = & $Aws @Arguments 2>$stderrFile
         $exitCode = $LASTEXITCODE
         $stderr = Get-Content -LiteralPath $stderrFile -Raw
     }
     finally {
+        $ErrorActionPreference = $previousErrorActionPreference
         Remove-Item -LiteralPath $stderrFile -ErrorAction SilentlyContinue
     }
     if ($AllowDuplicatePermission -and $exitCode -ne 0 -and $stderr -match 'InvalidPermission.Duplicate') {
