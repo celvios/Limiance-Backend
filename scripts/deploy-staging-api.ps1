@@ -33,6 +33,8 @@ $ExecutionRoleArn = "arn:aws:iam::$AccountId`:role/$ExecutionRole"
 $TaskRoleArn = "arn:aws:iam::$AccountId`:role/$TaskRole"
 
 $VpcId = & $Aws rds describe-db-instances --region $Region --db-instance-identifier $DatabaseInstance --query 'DBInstances[0].DBSubnetGroup.VpcId' --output text
+$RdsHost = & $Aws rds describe-db-instances --region $Region --db-instance-identifier $DatabaseInstance --query 'DBInstances[0].Endpoint.Address' --output text
+$RdsPort = & $Aws rds describe-db-instances --region $Region --db-instance-identifier $DatabaseInstance --query 'DBInstances[0].Endpoint.Port' --output text
 $SubnetText = & $Aws ec2 describe-subnets --region $Region --filters "Name=vpc-id,Values=$VpcId" --query 'Subnets[].SubnetId' --output text
 $Subnets = @($SubnetText -split '\s+' | Where-Object { $_ } | Select-Object -First 2)
 if ($Subnets.Count -lt 2) { throw 'At least two subnets are required for the Fargate deployment.' }
@@ -57,7 +59,7 @@ foreach ($Key in $AppSecretKeys) {
         valueFrom = "${AppSecretArn}:$Key`::"
     })
 }
-foreach ($Field in @('host', 'port', 'username', 'password')) {
+foreach ($Field in @('username', 'password')) {
     $Name = "RDS_DB_$($Field.ToUpper())"
     $Secrets.Add([pscustomobject]@{
         name = $Name
@@ -70,7 +72,11 @@ $Container = [pscustomobject]@{
     image = $Image
     essential = $true
     portMappings = @([pscustomobject]@{ containerPort = 8080; protocol = 'tcp' })
-    environment = @([pscustomobject]@{ name = 'RDS_DB_NAME'; value = 'limiance' })
+    environment = @(
+        [pscustomobject]@{ name = 'RDS_DB_HOST'; value = $RdsHost },
+        [pscustomobject]@{ name = 'RDS_DB_PORT'; value = "$RdsPort" },
+        [pscustomobject]@{ name = 'RDS_DB_NAME'; value = 'limiance' }
+    )
     secrets = @($Secrets)
     logConfiguration = [pscustomobject]@{
         logDriver = 'awslogs'
@@ -103,20 +109,8 @@ finally {
     Remove-Item -LiteralPath $TaskFile -ErrorAction SilentlyContinue
 }
 
-$NetworkConfig = [pscustomobject]@{
-    awsvpcConfiguration = [pscustomobject]@{
-        subnets = $Subnets
-        securityGroups = @($ApiSecurityGroup)
-        assignPublicIp = 'ENABLED'
-    }
-} | ConvertTo-Json -Depth 10 -Compress
-
-$Overrides = [pscustomobject]@{
-    containerOverrides = @([pscustomobject]@{
-        name = 'limiance-api'
-        command = @('/app/migrate')
-    })
-} | ConvertTo-Json -Depth 10 -Compress
+$NetworkConfig = "awsvpcConfiguration={subnets=[$($Subnets -join ',')],securityGroups=[$ApiSecurityGroup],assignPublicIp=ENABLED}"
+$Overrides = 'containerOverrides=[{name=limiance-api,command=[/app/migrate]}]'
 
 $RunResult = & $Aws ecs run-task --region $Region --cluster $Cluster --launch-type FARGATE --task-definition $TaskDefinitionArn --network-configuration $NetworkConfig --overrides $Overrides --output json | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw 'Migration task request failed.' }
