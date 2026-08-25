@@ -46,6 +46,12 @@ type Balance struct {
 	LockedAtomic    string `json:"locked_atomic"`
 }
 
+type Account struct {
+	ID   string `json:"account_id"`
+	Kind string `json:"account_kind"`
+	Name string `json:"account_name"`
+}
+
 type TransactionHistoryItem = datamanager.TransactionHistoryItem
 type Service struct {
 	data               *datamanager.Manager
@@ -77,6 +83,18 @@ func (s *Service) Balances(ctx context.Context, userID string) ([]Balance, error
 		})
 	}
 	return balances, nil
+}
+
+func (s *Service) Accounts(ctx context.Context, userID string) ([]Account, error) {
+	stored, err := s.data.UserAccounts(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	accounts := make([]Account, 0, len(stored))
+	for _, account := range stored {
+		accounts = append(accounts, Account{ID: account.ID, Kind: account.Kind, Name: account.Name})
+	}
+	return accounts, nil
 }
 
 func (s *Service) TransactionHistory(ctx context.Context, userID, accountKind string, limit int, cursor int64) ([]TransactionHistoryItem, error) {

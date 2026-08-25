@@ -693,6 +693,12 @@ type AccountBalance struct {
 	LockedAtomic    string `json:"locked_atomic"`
 }
 
+type AccountSummary struct {
+	ID   string `json:"account_id"`
+	Kind string `json:"account_kind"`
+	Name string `json:"account_name"`
+}
+
 // TransactionHistoryItem is an immutable ledger posting visible to one of a
 // user's accounts. Amounts are atomic strings so clients never lose precision.
 // A posting, rather than a mutable "transaction" projection, is returned so
@@ -963,6 +969,28 @@ func (m *Manager) AccountBalances(ctx context.Context, userID string) ([]Account
 		balances = append(balances, balance)
 	}
 	return balances, rows.Err()
+}
+
+func (m *Manager) UserAccounts(ctx context.Context, userID string) ([]AccountSummary, error) {
+	rows, err := m.pool.Query(ctx, `
+		SELECT id::text, kind::text, name
+		FROM accounts
+		WHERE user_id = $1 AND status = 'active'
+		ORDER BY kind, id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	accounts := make([]AccountSummary, 0, 2)
+	for rows.Next() {
+		var account AccountSummary
+		if err := rows.Scan(&account.ID, &account.Kind, &account.Name); err != nil {
+			return nil, err
+		}
+		accounts = append(accounts, account)
+	}
+	return accounts, rows.Err()
 }
 
 // AccountTransactionHistory reads posted ledger entries only. cursor is the

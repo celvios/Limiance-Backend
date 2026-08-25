@@ -76,6 +76,12 @@ func (h *AccountHandler) WalletBalances(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "balances_unavailable"})
 		return
 	}
+	accountSummaries, err := h.service.Accounts(r.Context(), principal.UserID)
+	if err != nil {
+		h.logger.Error("account list read failed", "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "accounts_unavailable"})
+		return
+	}
 	funding := make([]accounts.Balance, 0)
 	uta := make([]accounts.Balance, 0)
 	subaccounts := make([]accounts.Balance, 0)
@@ -93,6 +99,7 @@ func (h *AccountHandler) WalletBalances(w http.ResponseWriter, r *http.Request) 
 		"funding":     funding,
 		"uta":         uta,
 		"subaccounts": subaccounts,
+		"accounts":    accountSummaries,
 	})
 }
 
