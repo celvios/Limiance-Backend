@@ -23,7 +23,7 @@ type QuoteInput struct {
 	FromNetwork     string `json:"from_network"`
 	ToAssetSymbol   string `json:"to_asset_symbol"`
 	ToNetwork       string `json:"to_network"`
-	AmountAtomic    int64  `json:"amount_atomic"`
+	AmountAtomic    string `json:"amount_atomic"`
 }
 
 type ConfirmInput struct {
@@ -95,7 +95,8 @@ func (s *Service) Quote(ctx context.Context, userID string, input QuoteInput) (d
 	input.ToAssetSymbol = strings.ToUpper(strings.TrimSpace(input.ToAssetSymbol))
 	input.FromNetwork = strings.TrimSpace(input.FromNetwork)
 	input.ToNetwork = strings.TrimSpace(input.ToNetwork)
-	if userID == "" || input.SourceAccountID == "" || input.FromAssetSymbol == "" || input.ToAssetSymbol == "" || input.FromNetwork == "" || input.ToNetwork == "" || input.AmountAtomic <= 0 || input.FromAssetSymbol == input.ToAssetSymbol && input.FromNetwork == input.ToNetwork || s.market == nil {
+	amount, ok := new(big.Int).SetString(input.AmountAtomic, 10)
+	if userID == "" || input.SourceAccountID == "" || input.FromAssetSymbol == "" || input.ToAssetSymbol == "" || input.FromNetwork == "" || input.ToNetwork == "" || !ok || amount.Sign() <= 0 || input.FromAssetSymbol == input.ToAssetSymbol && input.FromNetwork == input.ToNetwork || s.market == nil {
 		return datamanager.ConversionQuote{}, ErrInvalidInput
 	}
 	pair, err := s.data.ConversionPair(ctx, input.FromAssetSymbol, input.FromNetwork, input.ToAssetSymbol, input.ToNetwork)
@@ -109,7 +110,7 @@ func (s *Service) Quote(ctx context.Context, userID string, input QuoteInput) (d
 	if err != nil {
 		return datamanager.ConversionQuote{}, ErrQuoteUnavailable
 	}
-	out, fee, err := quotedAmounts(input.AmountAtomic, price, pair.FromDecimals, pair.ToDecimals, sellBase, pair.SpreadBPS, pair.FeeBPS)
+	out, fee, err := quotedAmounts(amount, price, pair.FromDecimals, pair.ToDecimals, sellBase, pair.SpreadBPS, pair.FeeBPS)
 	if err != nil {
 		return datamanager.ConversionQuote{}, ErrQuoteUnavailable
 	}
@@ -135,18 +136,18 @@ func (s *Service) History(ctx context.Context, userID string, limit int) ([]data
 // quotedAmounts uses exact rationals and floors in the customer's favour only
 // after applying operator-approved spread and fee. No floating point money is
 // used anywhere in this calculation.
-func quotedAmounts(input int64, price string, fromDecimals, toDecimals int16, sellBase bool, spreadBPS, feeBPS int) (int64, int64, error) {
-	if input <= 0 || fromDecimals < 0 || toDecimals < 0 || spreadBPS < 0 || feeBPS < 0 {
-		return 0, 0, ErrInvalidInput
+func quotedAmounts(input *big.Int, price string, fromDecimals, toDecimals int16, sellBase bool, spreadBPS, feeBPS int) (string, string, error) {
+	if input == nil || input.Sign() <= 0 || fromDecimals < 0 || toDecimals < 0 || spreadBPS < 0 || feeBPS < 0 {
+		return "", "", ErrInvalidInput
 	}
 	p, ok := new(big.Rat).SetString(price)
 	if !ok || p.Sign() <= 0 {
-		return 0, 0, ErrInvalidInput
+		return "", "", ErrInvalidInput
 	}
 	ten := big.NewInt(10)
 	fd := new(big.Int).Exp(ten, big.NewInt(int64(fromDecimals)), nil)
 	td := new(big.Int).Exp(ten, big.NewInt(int64(toDecimals)), nil)
-	r := new(big.Rat).SetInt64(input)
+	r := new(big.Rat).SetInt(input)
 	r.Quo(r, new(big.Rat).SetInt(fd))
 	if sellBase {
 		r.Mul(r, p)
@@ -159,8 +160,8 @@ func quotedAmounts(input int64, price string, fromDecimals, toDecimals int16, se
 	gross := new(big.Int).Quo(r.Num(), r.Denom())
 	fee := new(big.Int).Quo(new(big.Int).Mul(gross, big.NewInt(int64(feeBPS))), big.NewInt(10000))
 	net := new(big.Int).Sub(gross, fee)
-	if !net.IsInt64() || !fee.IsInt64() || net.Sign() <= 0 {
-		return 0, 0, ErrInvalidInput
+	if net.Sign() <= 0 {
+		return "", "", ErrInvalidInput
 	}
-	return net.Int64(), fee.Int64(), nil
+	return net.String(), fee.String(), nil
 }

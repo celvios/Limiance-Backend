@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math/big"
 	"sort"
 	"strings"
 	"time"
@@ -32,7 +33,7 @@ type ConversionQuoteInput struct {
 	UserID, SourceAccountID                                string
 	FromSymbol, FromNetwork                                string
 	ToSymbol, ToNetwork                                    string
-	InputAmountAtomic, OutputAmountAtomic, FeeAmountAtomic int64
+	InputAmountAtomic, OutputAmountAtomic, FeeAmountAtomic string
 	Price, Provider                                        string
 	ExpiresAt                                              time.Time
 }
@@ -44,9 +45,9 @@ type ConversionQuote struct {
 	FromNetwork        string    `json:"from_network"`
 	ToSymbol           string    `json:"to_asset_symbol"`
 	ToNetwork          string    `json:"to_network"`
-	InputAmountAtomic  int64     `json:"input_amount_atomic"`
-	OutputAmountAtomic int64     `json:"output_amount_atomic"`
-	FeeAmountAtomic    int64     `json:"fee_amount_atomic"`
+	InputAmountAtomic  string    `json:"input_amount_atomic"`
+	OutputAmountAtomic string    `json:"output_amount_atomic"`
+	FeeAmountAtomic    string    `json:"fee_amount_atomic"`
 	Price              string    `json:"price"`
 	Provider           string    `json:"provider"`
 	ExpiresAt          time.Time `json:"expires_at"`
@@ -177,7 +178,7 @@ func (m *Manager) SetConversionsEnabled(ctx context.Context, actorID string, ena
 }
 
 func (m *Manager) CreateConversionQuote(ctx context.Context, input ConversionQuoteInput) (ConversionQuote, error) {
-	if input.UserID == "" || input.SourceAccountID == "" || input.InputAmountAtomic <= 0 || input.OutputAmountAtomic <= 0 || input.FeeAmountAtomic < 0 || input.Price == "" || input.Provider == "" || !input.ExpiresAt.After(time.Now()) {
+	if input.UserID == "" || input.SourceAccountID == "" || input.InputAmountAtomic == "" || input.OutputAmountAtomic == "" || input.FeeAmountAtomic == "" || input.Price == "" || input.Provider == "" || !input.ExpiresAt.After(time.Now()) {
 		return ConversionQuote{}, errors.New("invalid conversion quote")
 	}
 	var q ConversionQuote
@@ -236,10 +237,10 @@ func (m *Manager) ConfirmConversion(ctx context.Context, userID, quoteID, idempo
 		return ConversionResult{}, err
 	}
 	var sourceID, fromID, toID string
-	var inputAmount, outputAmount, feeAmount int64
+	var inputAmount, outputAmount, feeAmount string
 	var expires time.Time
 	var confirmed *time.Time
-	err = tx.QueryRow(ctx, `SELECT source_account_id::text,from_asset_id::text,to_asset_id::text,input_amount_atomic::bigint,output_amount_atomic::bigint,fee_amount_atomic::bigint,expires_at,confirmed_at FROM conversion_quotes WHERE id=$1 AND user_id=$2 FOR UPDATE`, quoteID, userID).Scan(&sourceID, &fromID, &toID, &inputAmount, &outputAmount, &feeAmount, &expires, &confirmed)
+	err = tx.QueryRow(ctx, `SELECT source_account_id::text,from_asset_id::text,to_asset_id::text,input_amount_atomic::text,output_amount_atomic::text,fee_amount_atomic::text,expires_at,confirmed_at FROM conversion_quotes WHERE id=$1 AND user_id=$2 FOR UPDATE`, quoteID, userID).Scan(&sourceID, &fromID, &toID, &inputAmount, &outputAmount, &feeAmount, &expires, &confirmed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ConversionResult{}, ErrConversionQuoteNotConfirmable
 	}
@@ -287,18 +288,23 @@ func (m *Manager) ConfirmConversion(ctx context.Context, userID, quoteID, idempo
 			return ConversionResult{}, err
 		}
 	}
-	var customerAvailable, treasuryAvailable int64
-	if err = tx.QueryRow(ctx, `SELECT COALESCE(SUM(CASE direction WHEN 'credit' THEN amount_atomic ELSE -amount_atomic END),0)::bigint FROM postings WHERE account_id=$1 AND asset_id=$2 AND bucket='available'`, sourceID, fromID).Scan(&customerAvailable); err != nil {
+	var customerAvailable, treasuryAvailable string
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(SUM(CASE direction WHEN 'credit' THEN amount_atomic ELSE -amount_atomic END),0)::text FROM postings WHERE account_id=$1 AND asset_id=$2 AND bucket='available'`, sourceID, fromID).Scan(&customerAvailable); err != nil {
 		return ConversionResult{}, err
 	}
-	if err = tx.QueryRow(ctx, `SELECT COALESCE(SUM(CASE direction WHEN 'credit' THEN amount_atomic ELSE -amount_atomic END),0)::bigint FROM postings WHERE account_id=$1 AND asset_id=$2 AND bucket='available'`, treasuryTo, toID).Scan(&treasuryAvailable); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(SUM(CASE direction WHEN 'credit' THEN amount_atomic ELSE -amount_atomic END),0)::text FROM postings WHERE account_id=$1 AND asset_id=$2 AND bucket='available'`, treasuryTo, toID).Scan(&treasuryAvailable); err != nil {
 		return ConversionResult{}, err
 	}
-	if outputAmount > 9_223_372_036_854_775_807-feeAmount {
+	inputBig, inputOK := new(big.Int).SetString(inputAmount, 10)
+	outputBig, outputOK := new(big.Int).SetString(outputAmount, 10)
+	feeBig, feeOK := new(big.Int).SetString(feeAmount, 10)
+	customerBig, customerOK := new(big.Int).SetString(customerAvailable, 10)
+	treasuryBig, treasuryOK := new(big.Int).SetString(treasuryAvailable, 10)
+	if !inputOK || !outputOK || !feeOK || !customerOK || !treasuryOK {
 		return ConversionResult{}, ErrConversionQuoteNotConfirmable
 	}
-	gross := outputAmount + feeAmount
-	if customerAvailable < inputAmount || treasuryAvailable < gross {
+	gross := new(big.Int).Add(outputBig, feeBig)
+	if customerBig.Cmp(inputBig) < 0 || treasuryBig.Cmp(gross) < 0 {
 		return ConversionResult{}, ErrConversionInsufficientBalance
 	}
 	var result ConversionResult
@@ -308,7 +314,7 @@ func (m *Manager) ConfirmConversion(ctx context.Context, userID, quoteID, idempo
 	if err = tx.QueryRow(ctx, `INSERT INTO journals (idempotency_key,reference_type,reference_id) VALUES ($1,'conversion_settlement',$2) RETURNING id::text`, idempotencyKey, result.ConversionID).Scan(&result.JournalID); err != nil {
 		return ConversionResult{}, err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO postings (journal_id,account_id,asset_id,bucket,direction,amount_atomic) VALUES ($1,$2,$3,'available','debit',$4),($1,$5,$3,'available','credit',$4),($1,$6,$7,'available','debit',$8),($1,$2,$7,'available','credit',$9),($1,$10,$7,'available','credit',$11)`, result.JournalID, sourceID, fromID, inputAmount, treasuryFrom, treasuryTo, toID, gross, outputAmount, feeTo, feeAmount); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO postings (journal_id,account_id,asset_id,bucket,direction,amount_atomic) VALUES ($1,$2,$3,'available','debit',$4),($1,$5,$3,'available','credit',$4),($1,$6,$7,'available','debit',$8),($1,$2,$7,'available','credit',$9),($1,$10,$7,'available','credit',$11)`, result.JournalID, sourceID, fromID, inputAmount, treasuryFrom, treasuryTo, toID, gross.String(), outputAmount, feeTo, feeAmount); err != nil {
 		return ConversionResult{}, err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE conversion_quotes SET confirmed_at=now() WHERE id=$1 AND confirmed_at IS NULL`, quoteID); err != nil {
