@@ -1,7 +1,8 @@
 param(
     [switch]$ValidateOnly,
     [string]$ImageTag = 'staging-phase1-accounts-security-r1',
-    [switch]$BootstrapTestAdministrator
+    [switch]$BootstrapTestAdministrator,
+    [switch]$EnableStagingConversions
 )
 
 $ErrorActionPreference = 'Stop'
@@ -158,5 +159,15 @@ if ($BootstrapTestAdministrator) {
     $BootstrapStatus = & $Aws ecs describe-tasks --region $Region --cluster $Cluster --tasks $BootstrapTaskArn --output json | ConvertFrom-Json
     if ($BootstrapStatus.tasks[0].containers[0].exitCode -ne 0) { throw 'Staging administrator bootstrap failed. Check the ECS task logs.' }
     Write-Host 'Staging administrator bootstrap succeeded.'
+}
+if ($EnableStagingConversions) {
+    $ConversionOverrides = 'containerOverrides=[{name=limiance-api,command=[/app/enable-staging-conversions]}]'
+    $ConversionRun = & $Aws ecs run-task --region $Region --cluster $Cluster --launch-type FARGATE --task-definition $TaskDefinitionArn --network-configuration $NetworkConfig --overrides $ConversionOverrides --output json | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or -not $ConversionRun.tasks -or $ConversionRun.tasks.Count -eq 0) { throw 'Staging conversion enablement task did not start.' }
+    $ConversionTaskArn = $ConversionRun.tasks[0].taskArn
+    & $Aws ecs wait tasks-stopped --region $Region --cluster $Cluster --tasks $ConversionTaskArn
+    $ConversionStatus = & $Aws ecs describe-tasks --region $Region --cluster $Cluster --tasks $ConversionTaskArn --output json | ConvertFrom-Json
+    if ($ConversionStatus.tasks[0].containers[0].exitCode -ne 0) { throw 'Staging conversion route enablement failed. Check the ECS task logs.' }
+    Write-Host 'Staging conversion routes and control enabled.'
 }
 Write-Host 'Migration succeeded. Two API tasks are running.'
