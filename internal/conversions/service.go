@@ -100,6 +100,9 @@ func (s *Service) Quote(ctx context.Context, userID string, input QuoteInput) (d
 	}
 	pair, err := s.data.ConversionPair(ctx, input.FromAssetSymbol, input.FromNetwork, input.ToAssetSymbol, input.ToNetwork)
 	if err != nil {
+		if errors.Is(err, datamanager.ErrConversionsDisabled) {
+			return datamanager.ConversionQuote{}, err
+		}
 		return datamanager.ConversionQuote{}, ErrQuoteUnavailable
 	}
 	price, sellBase, err := s.conversionPrice(ctx, pair.FromSymbol, pair.ToSymbol, pair.MarketSymbol)

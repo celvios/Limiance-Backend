@@ -42,10 +42,11 @@ func (h *ProfileHandler) Preferences(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		DisplayName       string `json:"display_name"`
-		PreferredCurrency string `json:"preferred_currency"`
-		PreferredLanguage string `json:"preferred_language"`
-		PreferredTheme    string `json:"preferred_theme"`
+		DisplayName           string `json:"display_name"`
+		PreferredCurrency     string `json:"preferred_currency"`
+		SecondaryDisplayAsset string `json:"secondary_display_asset"`
+		PreferredLanguage     string `json:"preferred_language"`
+		PreferredTheme        string `json:"preferred_theme"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&in); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
@@ -53,13 +54,14 @@ func (h *ProfileHandler) Preferences(w http.ResponseWriter, r *http.Request) {
 	}
 	in.DisplayName = strings.TrimSpace(in.DisplayName)
 	in.PreferredCurrency = strings.ToUpper(strings.TrimSpace(in.PreferredCurrency))
+	in.SecondaryDisplayAsset = strings.ToUpper(strings.TrimSpace(in.SecondaryDisplayAsset))
 	in.PreferredLanguage = strings.ToLower(strings.TrimSpace(in.PreferredLanguage))
 	in.PreferredTheme = strings.ToLower(strings.TrimSpace(in.PreferredTheme))
-	if len(in.DisplayName) > 80 || len(in.PreferredCurrency) != 3 || len(in.PreferredLanguage) < 2 || len(in.PreferredLanguage) > 12 || (in.PreferredTheme != "system" && in.PreferredTheme != "light" && in.PreferredTheme != "dark") {
+	if len(in.DisplayName) > 80 || len(in.PreferredCurrency) != 3 || (in.SecondaryDisplayAsset != "" && in.SecondaryDisplayAsset != "BTC" && in.SecondaryDisplayAsset != "ETH" && in.SecondaryDisplayAsset != "USDT") || len(in.PreferredLanguage) < 2 || len(in.PreferredLanguage) > 12 || (in.PreferredTheme != "system" && in.PreferredTheme != "light" && in.PreferredTheme != "dark") {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_preferences"})
 		return
 	}
-	profile, err := h.data.UpdateUserPreferences(r.Context(), p.UserID, in.DisplayName, in.PreferredCurrency, in.PreferredLanguage, in.PreferredTheme)
+	profile, err := h.data.UpdateUserPreferences(r.Context(), p.UserID, in.DisplayName, in.PreferredCurrency, in.SecondaryDisplayAsset, in.PreferredLanguage, in.PreferredTheme)
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "preferences_unavailable"})
 		return

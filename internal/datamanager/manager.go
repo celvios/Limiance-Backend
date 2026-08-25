@@ -26,15 +26,16 @@ func New(pool *pgxpool.Pool) *Manager { return &Manager{pool: pool} }
 func (m *Manager) Ping(ctx context.Context) error { return m.pool.Ping(ctx) }
 
 type UserProfile struct {
-	UserID            string `json:"user_id"`
-	UID               int64  `json:"uid"`
-	Email             string `json:"email"`
-	DisplayName       string `json:"display_name"`
-	KYCStatus         string `json:"kyc_status"`
-	KYCTier           int16  `json:"kyc_tier"`
-	PreferredCurrency string `json:"preferred_currency"`
-	PreferredLanguage string `json:"preferred_language"`
-	PreferredTheme    string `json:"preferred_theme"`
+	UserID                string `json:"user_id"`
+	UID                   int64  `json:"uid"`
+	Email                 string `json:"email"`
+	DisplayName           string `json:"display_name"`
+	KYCStatus             string `json:"kyc_status"`
+	KYCTier               int16  `json:"kyc_tier"`
+	PreferredCurrency     string `json:"preferred_currency"`
+	SecondaryDisplayAsset string `json:"secondary_display_asset"`
+	PreferredLanguage     string `json:"preferred_language"`
+	PreferredTheme        string `json:"preferred_theme"`
 }
 
 type PasswordResetUser struct {
@@ -44,17 +45,17 @@ type PasswordResetUser struct {
 
 func (m *Manager) UserProfile(ctx context.Context, userID string) (UserProfile, error) {
 	var profile UserProfile
-	err := m.pool.QueryRow(ctx, `SELECT u.id::text,u.uid,u.email,u.display_name,COALESCE(k.status::text,'not_started'),COALESCE(k.tier,0),u.preferred_currency,u.preferred_language,u.preferred_theme FROM users u LEFT JOIN kyc_profiles k ON k.user_id=u.id WHERE u.id=$1`, userID).Scan(&profile.UserID, &profile.UID, &profile.Email, &profile.DisplayName, &profile.KYCStatus, &profile.KYCTier, &profile.PreferredCurrency, &profile.PreferredLanguage, &profile.PreferredTheme)
+	err := m.pool.QueryRow(ctx, `SELECT u.id::text,u.uid,u.email,u.display_name,COALESCE(k.status::text,'not_started'),COALESCE(k.tier,0),u.preferred_currency,u.secondary_display_asset,u.preferred_language,u.preferred_theme FROM users u LEFT JOIN kyc_profiles k ON k.user_id=u.id WHERE u.id=$1`, userID).Scan(&profile.UserID, &profile.UID, &profile.Email, &profile.DisplayName, &profile.KYCStatus, &profile.KYCTier, &profile.PreferredCurrency, &profile.SecondaryDisplayAsset, &profile.PreferredLanguage, &profile.PreferredTheme)
 	return profile, err
 }
 
-func (m *Manager) UpdateUserPreferences(ctx context.Context, userID, displayName, currency, language, theme string) (UserProfile, error) {
+func (m *Manager) UpdateUserPreferences(ctx context.Context, userID, displayName, currency, secondaryAsset, language, theme string) (UserProfile, error) {
 	tx, err := m.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return UserProfile{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err = tx.Exec(ctx, `UPDATE users SET display_name=$2,preferred_currency=$3,preferred_language=$4,preferred_theme=$5,updated_at=now() WHERE id=$1 AND status='active'`, userID, displayName, currency, language, theme); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE users SET display_name=$2,preferred_currency=$3,secondary_display_asset=$4,preferred_language=$5,preferred_theme=$6,updated_at=now() WHERE id=$1 AND status='active'`, userID, displayName, currency, secondaryAsset, language, theme); err != nil {
 		return UserProfile{}, err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(actor_id,actor_type,action,resource_type,resource_id,metadata) VALUES($1,'user','user.preferences_updated','user',$1,'{}')`, userID); err != nil {
@@ -1382,7 +1383,7 @@ func (m *Manager) ApplyDepositObservation(ctx context.Context, event DepositObse
 			eventType = "deposit.submitted"
 		}
 		payload, err := json.Marshal(map[string]any{
-			"user_id":      userID,
+			"user_id":       userID,
 			"amount_atomic": event.AmountAtomic,
 			"confirmations": event.Confirmations,
 		})
