@@ -58,7 +58,7 @@ func (m *Manager) UpdateUserPreferences(ctx context.Context, userID, displayName
 	if _, err = tx.Exec(ctx, `UPDATE users SET display_name=$2,preferred_currency=$3,secondary_display_asset=$4,preferred_language=$5,preferred_theme=$6,updated_at=now() WHERE id=$1 AND status='active'`, userID, displayName, currency, secondaryAsset, language, theme); err != nil {
 		return UserProfile{}, err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(actor_id,actor_type,action,resource_type,resource_id,metadata) VALUES($1,'user','user.preferences_updated','user',$1,'{}')`, userID); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(actor_id,actor_type,action,resource_type,resource_id,metadata) VALUES($1,'user','user.preferences_updated','user',$1::text,'{}')`, userID); err != nil {
 		return UserProfile{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
