@@ -38,7 +38,7 @@ type Service struct {
 }
 
 func NewService(data *datamanager.Manager, market marketdata.SpotProvider) *Service {
-	return &Service{data: data, market: market, ttl: 15 * time.Second}
+	return &Service{data: data, market: market, ttl: 30 * time.Second}
 }
 
 func buildMarketSymbol(fromSymbol, toSymbol string) string {

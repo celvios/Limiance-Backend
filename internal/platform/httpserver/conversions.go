@@ -63,6 +63,9 @@ func (h *ConversionHandler) Confirm(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
 		return
 	}
+	if input.QuoteID == "" {
+		input.QuoteID = r.PathValue("quote_id")
+	}
 	input.IdempotencyKey = r.Header.Get("Idempotency-Key")
 	result, err := h.service.Confirm(r.Context(), p.UserID, input)
 	if err != nil {

@@ -88,6 +88,7 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 			conversionHandler := NewConversionHandler(conversions.NewService(data, marketProvider), logger)
 			mux.Handle("POST /v1/conversions/quotes", requireSession(authService)(http.HandlerFunc(conversionHandler.Quote)))
 			mux.Handle("POST /v1/conversions/confirm", requireSession(authService)(http.HandlerFunc(conversionHandler.Confirm)))
+			mux.Handle("POST /v1/conversions/{quote_id}/execute", requireSession(authService)(http.HandlerFunc(conversionHandler.Confirm)))
 			mux.Handle("GET /v1/conversions", requireSession(authService)(http.HandlerFunc(conversionHandler.History)))
 		}
 		var custodyProvider custody.Provider
