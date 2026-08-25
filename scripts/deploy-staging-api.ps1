@@ -1,5 +1,6 @@
 param(
-    [switch]$ValidateOnly
+    [switch]$ValidateOnly,
+    [string]$ImageTag = 'staging-phase1-accounts-security-r1'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -8,14 +9,14 @@ $Region = 'eu-north-1'
 $Cluster = 'limiance-staging'
 $Family = 'limiance-staging-api'
 $Service = 'limiance-staging-api'
-$Image = '041659147758.dkr.ecr.eu-north-1.amazonaws.com/limiance-backend:staging-ba8c5c5'
+$Image = "041659147758.dkr.ecr.eu-north-1.amazonaws.com/limiance-backend:$ImageTag"
 $ExecutionRole = 'limiance-staging-ecs-execution'
 $TaskRole = 'limiance-staging-ecs-task'
 $ApiSecurityGroup = 'sg-0b6b43d8368e0db2a'
 $DatabaseInstance = 'limiance-staging'
 $ApplicationSecret = 'limiance/staging/app'
 $LogGroup = '/ecs/limiance-staging'
-$AllowedBrowserOrigins = 'https://limiance-main.vercel.app'
+$AllowedBrowserOrigins = 'https://staging.celvios.site'
 $Aws = 'C:\Program Files\Amazon\AWSCLIV2\aws.exe'
 
 if (-not (Test-Path -LiteralPath $Aws)) {
@@ -48,7 +49,8 @@ $AppSecretKeys = @(
     'WITHDRAWAL_ADDRESS_COOLDOWN', 'LOG_LEVEL',
 	'VERIFICATION_CODE_PEPPER', 'VERIFICATION_ENCRYPTION_KEY',
 	'TOTP_ENCRYPTION_KEY', 'TRAVEL_RULE_ENCRYPTION_KEY',
-    'BYBIT_MARKET_DATA_BASE_URL', 'FIREBLOCKS_BASE_URL',
+    'BYBIT_MARKET_DATA_BASE_URL', 'FIREBLOCKS_API_KEY',
+    'FIREBLOCKS_PRIVATE_KEY', 'FIREBLOCKS_BASE_URL', 'FIREBLOCKS_JWKS_URL',
     'CUSTODY_MODE',
     'SELF_CUSTODY_TESTNET_ENABLED', 'SQS_OUTBOX_QUEUE_URL',
     'SQS_NOTIFICATIONS_QUEUE_URL', 'SQS_DEPOSITS_QUEUE_URL',
