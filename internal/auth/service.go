@@ -13,6 +13,7 @@ import (
 	"github.com/limiance/backend/internal/security/password"
 	"github.com/limiance/backend/internal/security/session"
 	"github.com/limiance/backend/internal/security/totp"
+	"github.com/limiance/backend/internal/security/verification"
 )
 
 var (
@@ -22,6 +23,7 @@ var (
 	ErrMFARequired        = errors.New("multi-factor authentication required")
 	ErrInvalidTOTP        = errors.New("invalid authenticator code")
 	ErrTOTPUnavailable    = errors.New("totp is unavailable")
+	ErrInvalidReset       = errors.New("invalid or expired password reset code")
 )
 
 type LoginInput struct {
@@ -45,13 +47,15 @@ type Principal struct {
 }
 
 type Service struct {
-	data       *datamanager.Manager
-	sessionTTL time.Duration
-	totpKey    string
+	data               *datamanager.Manager
+	sessionTTL         time.Duration
+	totpKey            string
+	verificationPepper string
+	verificationKey    string
 }
 
-func NewService(data *datamanager.Manager, sessionTTL time.Duration, totpKey string) *Service {
-	return &Service{data: data, sessionTTL: sessionTTL, totpKey: totpKey}
+func NewService(data *datamanager.Manager, sessionTTL time.Duration, totpKey, verificationPepper, verificationKey string) *Service {
+	return &Service{data: data, sessionTTL: sessionTTL, totpKey: totpKey, verificationPepper: verificationPepper, verificationKey: verificationKey}
 }
 
 func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, error) {
@@ -102,12 +106,23 @@ func (s *Service) createSession(ctx context.Context, userID, method string, meta
 	if err != nil {
 		return LoginResult{}, err
 	}
+	knownDevice, err := s.data.SessionDeviceKnown(ctx, userID, meta)
+	if err != nil {
+		return LoginResult{}, err
+	}
 	expiresAt := time.Now().UTC().Add(s.sessionTTL)
 	if err := s.data.WithinTransaction(ctx, func(tx *datamanager.Transaction) error {
-		if _, err := tx.Sessions().Create(ctx, userID, hash, expiresAt, meta); err != nil {
+		sessionID, err := tx.Sessions().Create(ctx, userID, hash, expiresAt, meta)
+		if err != nil {
 			return err
 		}
-		return tx.Audit().Record(ctx, "user", "session.created", "user", userID, map[string]string{"method": method})
+		if err := tx.Audit().Record(ctx, "user", "session.created", "user", userID, map[string]string{"method": method}); err != nil {
+			return err
+		}
+		if !knownDevice {
+			return tx.Outbox().Enqueue(ctx, "security.new_device_login", "session", sessionID, map[string]string{"user_id": userID, "method": method})
+		}
+		return nil
 	}); err != nil {
 		return LoginResult{}, err
 	}
@@ -247,4 +262,121 @@ func (s *Service) SetAntiPhishingCode(ctx context.Context, principal Principal, 
 		}
 	}
 	return s.data.SetAntiPhishingCode(ctx, principal.UserID, code)
+}
+
+// RequestPasswordReset always returns nil for unknown/inactive accounts so an
+// unauthenticated caller cannot enumerate Limiance customers.
+func (s *Service) RequestPasswordReset(ctx context.Context, email string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if _, err := mail.ParseAddress(email); err != nil {
+		return nil
+	}
+	user, err := s.data.PasswordResetUser(ctx, email)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	code, err := verification.NewCode()
+	if err != nil {
+		return err
+	}
+	codeHash, err := verification.Hash(s.verificationPepper, code)
+	if err != nil {
+		return err
+	}
+	sealedCode, err := envelope.Seal(s.verificationKey, code)
+	if err != nil {
+		return err
+	}
+	expiresAt := time.Now().UTC().Add(10 * time.Minute)
+	return s.data.CreatePasswordResetChallenge(ctx, user.ID, codeHash, expiresAt, map[string]any{"user_id": user.ID, "email": user.Email, "code_ciphertext": sealedCode, "expires_at": expiresAt.Format(time.RFC3339)})
+}
+
+func (s *Service) ResetPassword(ctx context.Context, email, code, newPassword string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if _, err := mail.ParseAddress(email); err != nil || !validPassword(newPassword) || len(code) != 6 {
+		return ErrInvalidReset
+	}
+	codeHash, err := verification.Hash(s.verificationPepper, code)
+	if err != nil {
+		return err
+	}
+	passwordHash, err := password.Hash(newPassword)
+	if err != nil {
+		return err
+	}
+	changed, err := s.data.ResetPassword(ctx, email, codeHash, passwordHash)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return ErrInvalidReset
+	}
+	return nil
+}
+
+func (s *Service) StepUp(ctx context.Context, principal Principal, purpose, code string) (string, time.Time, error) {
+	if s.totpKey == "" {
+		return "", time.Time{}, ErrTOTPUnavailable
+	}
+	purpose = strings.ToLower(strings.TrimSpace(purpose))
+	if len(purpose) < 3 || len(purpose) > 64 || !validStepUpPurpose(purpose) {
+		return "", time.Time{}, ErrInvalidCredentials
+	}
+	ciphertext, err := s.data.TOTPSecret(ctx, principal.UserID, true)
+	if err != nil {
+		return "", time.Time{}, ErrInvalidTOTP
+	}
+	secret, err := envelope.Open(s.totpKey, ciphertext)
+	if err != nil || !totp.Validate(secret, code, time.Now()) {
+		return "", time.Time{}, ErrInvalidTOTP
+	}
+	raw, hash, err := session.New()
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	expiresAt := time.Now().UTC().Add(5 * time.Minute)
+	if err := s.data.CreateMFAStepUpChallenge(ctx, principal.UserID, principal.SessionID, purpose, hash, expiresAt); err != nil {
+		return "", time.Time{}, err
+	}
+	return raw, expiresAt, nil
+}
+
+func (s *Service) RequestMFARecovery(ctx context.Context, email, reason string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	reason = strings.TrimSpace(reason)
+	if _, err := mail.ParseAddress(email); err != nil || len(reason) < 12 || len(reason) > 1000 {
+		return ErrInvalidCredentials
+	}
+	_, err := s.data.CreateMFARecoveryRequest(ctx, email, reason)
+	return err
+}
+
+func validPassword(value string) bool {
+	if len(value) < 12 || len(value) > 128 {
+		return false
+	}
+	var upper, lower, digit bool
+	for _, r := range value {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			upper = true
+		case r >= 'a' && r <= 'z':
+			lower = true
+		case r >= '0' && r <= '9':
+			digit = true
+		}
+	}
+	return upper && lower && digit
+}
+
+func validStepUpPurpose(value string) bool {
+	for _, r := range value {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '-' || r == '.') {
+			return false
+		}
+	}
+	return true
 }

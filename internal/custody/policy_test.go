@@ -4,8 +4,10 @@ import "testing"
 
 func TestRoutePolicyFailsClosedForSelfCustody(t *testing.T) {
 	policy := RoutePolicy{Mode: "self_custody_testnet", SelfCustodyTestnetEnabled: true}
-	if err := policy.Validate("ethereum-sepolia"); err != nil {
-		t.Fatalf("approved testnet was rejected: %v", err)
+	for _, network := range []string{"ethereum_sepolia", "bitcoin_testnet4"} {
+		if err := policy.Validate(network); err != nil {
+			t.Fatalf("approved testnet %q was rejected: %v", network, err)
+		}
 	}
 	if err := policy.Validate("ethereum"); err != ErrNetworkNotApproved {
 		t.Fatalf("mainnet error = %v, want %v", err, ErrNetworkNotApproved)

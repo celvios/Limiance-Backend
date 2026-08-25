@@ -43,7 +43,7 @@ func (s *Service) DepositAddress(ctx context.Context, userID string, request Dep
 		return datamanager.DepositAddress{}, ErrProviderUnavailable
 	}
 	request.AssetSymbol = strings.ToUpper(strings.TrimSpace(request.AssetSymbol))
-	request.Network = strings.ToLower(strings.TrimSpace(request.Network))
+	request.Network = canonicalNetwork(request.Network)
 	if request.AssetSymbol == "" || request.Network == "" {
 		return datamanager.DepositAddress{}, ErrInvalidDepositRequest
 	}
@@ -79,4 +79,26 @@ func (s *Service) DepositAddress(ctx context.Context, userID string, request Dep
 		return datamanager.DepositAddress{}, err
 	}
 	return s.data.SaveDepositAddress(ctx, userID, asset, wallet.ID, providerAddress.ID, providerAddress.Address, providerAddress.Tag)
+}
+
+// canonicalNetwork accepts the display aliases that were used by the first
+// wallet UI while persisting and looking up only the catalog's canonical codes.
+// This keeps the assets table and all custody/audit records consistent instead
+// of creating duplicate routes for spelling differences.
+func canonicalNetwork(network string) string {
+	network = strings.ToLower(strings.TrimSpace(network))
+	switch network {
+	case "ethereum-sepolia":
+		return "ethereum_sepolia"
+	case "bitcoin-testnet", "bitcoin-testnet4":
+		return "bitcoin_testnet4"
+	case "arbitrum-sepolia":
+		return "arbitrum_sepolia"
+	case "base-sepolia":
+		return "base_sepolia"
+	case "optimism-sepolia":
+		return "optimism_sepolia"
+	default:
+		return network
+	}
 }

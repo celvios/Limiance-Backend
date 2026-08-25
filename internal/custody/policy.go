@@ -27,7 +27,7 @@ func (p RoutePolicy) Validate(network string) error {
 
 func isApprovedSelfCustodyTestnet(network string) bool {
 	switch strings.ToLower(strings.TrimSpace(network)) {
-	case "bitcoin-testnet", "ethereum-sepolia":
+	case "bitcoin_testnet4", "ethereum_sepolia":
 		return true
 	default:
 		return false

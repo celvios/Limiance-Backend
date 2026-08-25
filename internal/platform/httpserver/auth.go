@@ -16,6 +16,7 @@ const sessionCookieName = "limiance_session"
 
 type AuthHandler struct {
 	service      *auth.Service
+	verification *auth.EmailVerificationService
 	logger       *slog.Logger
 	secureCookie bool
 	sameSite     http.SameSite
@@ -84,6 +85,15 @@ func NewAuthHandler(service *auth.Service, logger *slog.Logger, secureCookie boo
 	return &AuthHandler{service: service, logger: logger, secureCookie: secureCookie, sameSite: sameSite}
 }
 
+// WithEmailVerification configures the authenticated-login path to issue a
+// fresh verification challenge after valid credentials are supplied for an
+// inactive account. This is deliberately not performed for invalid logins, so
+// it does not create an account-enumeration or email-spam primitive.
+func (h *AuthHandler) WithEmailVerification(service *auth.EmailVerificationService) *AuthHandler {
+	h.verification = service
+	return h
+}
+
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	defer r.Body.Close()
@@ -106,7 +116,20 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, auth.ErrAccountFrozen):
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "account_frozen"})
 		case errors.Is(err, auth.ErrVerificationNeeded):
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "email_verification_required"})
+			resent := false
+			if h.verification != nil {
+				if resendErr := h.verification.Resend(r.Context(), input.Email); resendErr != nil {
+					h.logger.Error("verification resend after login failed", "error", resendErr)
+				} else {
+					resent = true
+				}
+			}
+			// The frontend must handle this response by routing to its verification
+			// page. HTTP APIs do not redirect an XHR/fetch request into a UI route.
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"error":                    "email_verification_required",
+				"verification_code_resent": resent,
+			})
 		default:
 			h.logger.Error("login failed", "error", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "login_failed"})
@@ -146,6 +169,115 @@ func (h *AuthHandler) VerifyTOTPLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	h.setSessionCookie(w, result)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "authenticated"})
+}
+
+func (h *AuthHandler) PasswordResetRequest(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+	defer r.Body.Close()
+	var input struct {
+		Email string `json:"email"`
+	}
+	d := json.NewDecoder(r.Body)
+	d.DisallowUnknownFields()
+	if err := d.Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+		return
+	}
+	if err := h.service.RequestPasswordReset(r.Context(), input.Email); err != nil {
+		h.logger.Error("password reset request failed", "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "password_reset_unavailable"})
+		return
+	}
+	// Deliberately identical for known and unknown email addresses.
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "if_required_sent"})
+}
+
+func (h *AuthHandler) PasswordResetConfirm(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	defer r.Body.Close()
+	var input struct {
+		Email       string `json:"email"`
+		Code        string `json:"code"`
+		NewPassword string `json:"new_password"`
+	}
+	d := json.NewDecoder(r.Body)
+	d.DisallowUnknownFields()
+	if err := d.Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+		return
+	}
+	if err := h.service.ResetPassword(r.Context(), input.Email, input.Code, input.NewPassword); err != nil {
+		if errors.Is(err, auth.ErrInvalidReset) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_or_expired_code"})
+			return
+		}
+		h.logger.Error("password reset failed", "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "password_reset_unavailable"})
+		return
+	}
+	h.clearSessionCookie(w)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "password_reset"})
+}
+
+func (h *AuthHandler) StepUp(w http.ResponseWriter, r *http.Request) {
+	p, ok := principalFromContext(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+	defer r.Body.Close()
+	var input struct {
+		Purpose string `json:"purpose"`
+		Code    string `json:"code"`
+	}
+	d := json.NewDecoder(r.Body)
+	d.DisallowUnknownFields()
+	if err := d.Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+		return
+	}
+	token, expiresAt, err := h.service.StepUp(r.Context(), p, input.Purpose, input.Code)
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrInvalidTOTP):
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_authenticator_code"})
+		case errors.Is(err, auth.ErrTOTPUnavailable):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "totp_not_enabled"})
+		case errors.Is(err, auth.ErrInvalidCredentials):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_step_up_request"})
+		default:
+			h.logger.Error("step-up verification failed", "error", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "step_up_unavailable"})
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"step_up_token": token, "expires_at": expiresAt})
+}
+
+func (h *AuthHandler) MFARecoveryRequest(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	defer r.Body.Close()
+	var input struct {
+		Email  string `json:"email"`
+		Reason string `json:"reason"`
+	}
+	d := json.NewDecoder(r.Body)
+	d.DisallowUnknownFields()
+	if err := d.Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+		return
+	}
+	if err := h.service.RequestMFARecovery(r.Context(), input.Email, input.Reason); err != nil {
+		if errors.Is(err, auth.ErrInvalidCredentials) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_recovery_request"})
+			return
+		}
+		h.logger.Error("mfa recovery request failed", "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "mfa_recovery_unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "if_required_submitted"})
 }
 
 func (h *AuthHandler) TOTPEnroll(w http.ResponseWriter, r *http.Request) {

@@ -45,6 +45,8 @@ type Balance struct {
 	PendingAtomic   string `json:"pending_atomic"`
 	LockedAtomic    string `json:"locked_atomic"`
 }
+
+type TransactionHistoryItem = datamanager.TransactionHistoryItem
 type Service struct {
 	data               *datamanager.Manager
 	verificationPepper string
@@ -75,6 +77,10 @@ func (s *Service) Balances(ctx context.Context, userID string) ([]Balance, error
 		})
 	}
 	return balances, nil
+}
+
+func (s *Service) TransactionHistory(ctx context.Context, userID, accountKind string, limit int, cursor int64) ([]TransactionHistoryItem, error) {
+	return s.data.AccountTransactionHistory(ctx, userID, accountKind, limit, cursor)
 }
 
 func (s *Service) Register(ctx context.Context, input RegisterInput) (User, error) {
