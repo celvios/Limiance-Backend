@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 
@@ -63,6 +64,7 @@ func (h *ProfileHandler) Preferences(w http.ResponseWriter, r *http.Request) {
 	}
 	profile, err := h.data.UpdateUserPreferences(r.Context(), p.UserID, in.DisplayName, in.PreferredCurrency, in.SecondaryDisplayAsset, in.PreferredLanguage, in.PreferredTheme)
 	if err != nil {
+		log.Printf("user preferences update failed: user_id=%s error=%v", p.UserID, err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "preferences_unavailable"})
 		return
 	}
