@@ -681,15 +681,15 @@ func (m *Manager) CreateInternalTransfer(ctx context.Context, input TransferInpu
 // AccountBalance is a ledger-derived balance. Amounts remain decimal strings to
 // preserve atomic-unit precision across assets with different decimal places.
 type AccountBalance struct {
-	AccountID       string
-	AccountKind     string
-	AccountName     string
-	AssetSymbol     string
-	Network         string
-	AvailableAtomic string
-	HeldAtomic      string
-	PendingAtomic   string
-	LockedAtomic    string
+	AccountID       string `json:"account_id"`
+	AccountKind     string `json:"account_kind"`
+	AccountName     string `json:"account_name"`
+	AssetSymbol     string `json:"asset_symbol"`
+	Network         string `json:"network"`
+	AvailableAtomic string `json:"available_atomic"`
+	HeldAtomic      string `json:"held_atomic"`
+	PendingAtomic   string `json:"pending_atomic"`
+	LockedAtomic    string `json:"locked_atomic"`
 }
 
 // TransactionHistoryItem is an immutable ledger posting visible to one of a
