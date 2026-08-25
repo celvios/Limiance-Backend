@@ -1,6 +1,11 @@
 package conversions
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"github.com/limiance/backend/internal/marketdata"
+)
 
 func TestQuotedAmountsAvoidsFloatAndAppliesFee(t *testing.T) {
 	net, fee, err := quotedAmounts(100000000, "100", 8, 6, true, 0, 25)
@@ -26,4 +31,19 @@ func TestBuildMarketSymbolUsesAssetPairFallback(t *testing.T) {
 	if got := buildMarketSymbol("USDC", "BTC"); got != "BTCUSDC" {
 		t.Fatalf("expected BTCUSDC, got %q", got)
 	}
+}
+
+func TestConversionPriceUsesUSDTBridgeForNonDirectPair(t *testing.T) {
+	provider := &stubMarketProvider{prices: map[string]string{"SOLUSDT": "100", "POLUSDT": "0.25"}}
+	service := &Service{market: provider}
+	price, sellBase, err := service.conversionPrice(context.Background(), "SOL", "POL", "SOLPOL")
+	if err != nil || !sellBase || price != "400.000000000000000000" {
+		t.Fatalf("price=%q sellBase=%t err=%v", price, sellBase, err)
+	}
+}
+
+type stubMarketProvider struct{ prices map[string]string }
+
+func (s *stubMarketProvider) SpotTicker(_ context.Context, symbol string) (marketdata.SpotTicker, error) {
+	return marketdata.SpotTicker{Symbol: symbol, Bid: s.prices[symbol], Ask: s.prices[symbol], Last: s.prices[symbol]}, nil
 }

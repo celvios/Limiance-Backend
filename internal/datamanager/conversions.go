@@ -135,7 +135,8 @@ func (m *Manager) ConversionPair(ctx context.Context, fromSymbol, fromNetwork, t
 	}
 	err = m.pool.QueryRow(ctx, `SELECT fa.id::text, ta.id::text, fa.symbol, ta.symbol, fa.network, ta.network, fa.decimals, ta.decimals
 		FROM assets fa JOIN assets ta ON true
-		WHERE fa.symbol=$1 AND fa.network=$2 AND ta.symbol=$3 AND ta.network=$4 AND fa.status='enabled' AND ta.status='enabled'`, fromSymbol, fromNetwork, toSymbol, toNetwork).
+		WHERE fa.symbol=$1 AND fa.network=$2 AND ta.symbol=$3 AND fa.status='enabled' AND ta.status='enabled'
+		ORDER BY CASE WHEN ta.network=$4 THEN 0 ELSE 1 END, ta.network`, fromSymbol, fromNetwork, toSymbol, toNetwork).
 		Scan(&pair.FromAssetID, &pair.ToAssetID, &pair.FromSymbol, &pair.ToSymbol, &pair.FromNetwork, &pair.ToNetwork, &pair.FromDecimals, &pair.ToDecimals)
 	if err != nil {
 		return ConversionPair{}, ErrConversionPairUnavailable
