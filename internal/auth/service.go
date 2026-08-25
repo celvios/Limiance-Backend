@@ -249,6 +249,10 @@ func (s *Service) RevokeSession(ctx context.Context, principal Principal, sessio
 	return s.data.RevokeUserSession(ctx, principal.UserID, sessionID)
 }
 
+func (s *Service) RevokeOtherSessions(ctx context.Context, principal Principal) (int64, error) {
+	return s.data.RevokeOtherUserSessions(ctx, principal.UserID, principal.SessionID)
+}
+
 func (s *Service) SetAntiPhishingCode(ctx context.Context, principal Principal, code string) error {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	if code != "" {

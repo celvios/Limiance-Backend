@@ -111,3 +111,37 @@ func (s *Service) ConversionsEnabledForAdministrator(ctx context.Context, actorI
 	}
 	return s.data.ConversionsEnabled(ctx)
 }
+
+func (s *Service) KYCApplications(ctx context.Context, actorID, status string) ([]datamanager.KYCApplication, error) {
+	allowed, err := s.data.HasRole(ctx, actorID, "compliance")
+	if err != nil {
+		return nil, err
+	}
+	if !allowed {
+		return nil, ErrNotPlatformAdministrator
+	}
+	return s.data.KYCApplications(ctx, strings.ToLower(strings.TrimSpace(status)))
+}
+
+func (s *Service) ReviewKYC(ctx context.Context, actorID, userID, status, reason string) error {
+	allowed, err := s.data.HasRole(ctx, actorID, "compliance")
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return ErrNotPlatformAdministrator
+	}
+	status = strings.ToLower(strings.TrimSpace(status))
+	if status != "approved" && status != "rejected" {
+		return ErrInvalidRole
+	}
+	reason = strings.TrimSpace(reason)
+	if status == "rejected" && len(reason) < 8 {
+		return ErrInvalidApproval
+	}
+	tier := int16(0)
+	if status == "approved" {
+		tier = 1
+	}
+	return s.data.ReviewKYC(ctx, actorID, userID, status, map[bool]string{true: "GREEN", false: "RED"}[status == "approved"], reason, tier)
+}

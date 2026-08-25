@@ -147,6 +147,77 @@ func (m *Manager) CreateMFAStepUpChallenge(ctx context.Context, userID, sessionI
 	})
 }
 
+func (m *Manager) ConsumeMFAStepUpChallenge(ctx context.Context, userID, sessionID, purpose string, tokenHash []byte) (bool, error) {
+	command, err := m.pool.Exec(ctx, `UPDATE mfa_step_up_challenges SET consumed_at=now() WHERE user_id=$1 AND session_id=$2 AND purpose=$3 AND token_hash=$4 AND consumed_at IS NULL AND expires_at > now()`, userID, sessionID, purpose, tokenHash)
+	return command.RowsAffected() == 1, err
+}
+
+type APIKey struct {
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	Scope       string     `json:"scope"`
+	IPWhitelist []string   `json:"ip_whitelist"`
+	LastUsedAt  *time.Time `json:"last_used_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+type APIKeyAuthentication struct {
+	UserID           string
+	UID              int64
+	Email            string
+	SecretCiphertext string
+	IPWhitelist      []string
+}
+
+func (m *Manager) APIKeyAuthentication(ctx context.Context, keyHash []byte) (APIKeyAuthentication, error) {
+	var key APIKeyAuthentication
+	err := m.pool.QueryRow(ctx, `SELECT u.id::text,u.uid,u.email,k.secret_ciphertext,k.ip_whitelist FROM api_keys k JOIN users u ON u.id=k.user_id WHERE k.key_hash=$1 AND k.revoked_at IS NULL AND u.status='active'`, keyHash).Scan(&key.UserID, &key.UID, &key.Email, &key.SecretCiphertext, &key.IPWhitelist)
+	return key, err
+}
+
+func (m *Manager) CreateAPIKey(ctx context.Context, userID, name, scope string, keyHash []byte, secretCiphertext string, ipWhitelist []string) (APIKey, error) {
+	var key APIKey
+	err := m.pool.QueryRow(ctx, `INSERT INTO api_keys (user_id,name,key_hash,secret_ciphertext,scope,ip_whitelist) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id::text,name,scope,ip_whitelist,last_used_at,created_at`, userID, name, keyHash, secretCiphertext, scope, ipWhitelist).Scan(&key.ID, &key.Name, &key.Scope, &key.IPWhitelist, &key.LastUsedAt, &key.CreatedAt)
+	if err != nil {
+		return APIKey{}, err
+	}
+	err = m.WithinTransaction(ctx, func(tx *Transaction) error {
+		return tx.Audit().Record(ctx, "user", "security.api_key_created", "api_key", key.ID, map[string]any{"scope": scope})
+	})
+	return key, err
+}
+
+func (m *Manager) APIKeys(ctx context.Context, userID string) ([]APIKey, error) {
+	rows, err := m.pool.Query(ctx, `SELECT id::text,name,scope,ip_whitelist,last_used_at,created_at FROM api_keys WHERE user_id=$1 AND revoked_at IS NULL ORDER BY created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	keys := make([]APIKey, 0)
+	for rows.Next() {
+		var key APIKey
+		if err := rows.Scan(&key.ID, &key.Name, &key.Scope, &key.IPWhitelist, &key.LastUsedAt, &key.CreatedAt); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
+}
+
+func (m *Manager) RevokeAPIKey(ctx context.Context, userID, keyID string) (bool, error) {
+	command, err := m.pool.Exec(ctx, `UPDATE api_keys SET revoked_at=now() WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL`, keyID, userID)
+	if err != nil {
+		return false, err
+	}
+	if command.RowsAffected() == 0 {
+		return false, nil
+	}
+	err = m.WithinTransaction(ctx, func(tx *Transaction) error {
+		return tx.Audit().Record(ctx, "user", "security.api_key_revoked", "api_key", keyID, nil)
+	})
+	return err == nil, err
+}
+
 // CreateMFARecoveryRequest is intentionally a request for an audited human
 // review, never an automatic TOTP reset.
 func (m *Manager) CreateMFARecoveryRequest(ctx context.Context, email, reason string) (bool, error) {
@@ -300,6 +371,11 @@ func (m *Manager) RevokeUserSession(ctx context.Context, userID, sessionID strin
 		return false, err
 	}
 	return true, tx.Commit(ctx)
+}
+
+func (m *Manager) RevokeOtherUserSessions(ctx context.Context, userID, currentSessionID string) (int64, error) {
+	command, err := m.pool.Exec(ctx, `UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND id<>$2 AND revoked_at IS NULL`, userID, currentSessionID)
+	return command.RowsAffected(), err
 }
 
 func (m *Manager) EmailVerificationUser(ctx context.Context, email string) (EmailVerificationUser, error) {
@@ -557,12 +633,66 @@ type KYCUser struct {
 	KYCStatus   string
 }
 
+func (m *Manager) KYCUserByApplicant(ctx context.Context, applicantID string) (KYCUser, error) {
+	var user KYCUser
+	err := m.pool.QueryRow(ctx, `SELECT u.id::text,u.email,u.status,COALESCE(k.applicant_id,''),COALESCE(k.status::text,'not_started') FROM users u JOIN kyc_profiles k ON k.user_id=u.id WHERE k.applicant_id=$1`, applicantID).Scan(&user.ID, &user.Email, &user.Status, &user.ApplicantID, &user.KYCStatus)
+	return user, err
+}
+
 type KYCProfile struct {
 	Provider  string
 	Status    string
 	Tier      int16
 	LevelName string
 	UpdatedAt time.Time
+}
+
+type KYCApplication struct {
+	UserID       string     `json:"user_id"`
+	UID          int64      `json:"uid"`
+	Email        string     `json:"email"`
+	ApplicantID  string     `json:"applicant_id"`
+	Provider     string     `json:"provider"`
+	Status       string     `json:"status"`
+	Tier         int16      `json:"tier"`
+	LevelName    string     `json:"level_name"`
+	ReviewAnswer string     `json:"review_answer,omitempty"`
+	RejectType   string     `json:"reject_type,omitempty"`
+	ReviewedAt   *time.Time `json:"reviewed_at,omitempty"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+func (m *Manager) KYCApplications(ctx context.Context, status string) ([]KYCApplication, error) {
+	rows, err := m.pool.Query(ctx, `SELECT u.id::text,u.uid,u.email,COALESCE(k.applicant_id,''),k.provider,k.status::text,k.tier,COALESCE(k.level_name,''),COALESCE(k.review_answer,''),COALESCE(k.review_reject_type,''),k.reviewed_at,k.updated_at FROM kyc_profiles k JOIN users u ON u.id=k.user_id WHERE ($1='' OR k.status::text=$1) ORDER BY k.updated_at ASC`, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]KYCApplication, 0)
+	for rows.Next() {
+		var item KYCApplication
+		if err := rows.Scan(&item.UserID, &item.UID, &item.Email, &item.ApplicantID, &item.Provider, &item.Status, &item.Tier, &item.LevelName, &item.ReviewAnswer, &item.RejectType, &item.ReviewedAt, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (m *Manager) ReviewKYC(ctx context.Context, reviewerID, userID, status, answer, reason string, tier int16) error {
+	return m.WithinTransaction(ctx, func(tx *Transaction) error {
+		command, err := tx.audit.tx.Exec(ctx, `UPDATE kyc_profiles SET status=$2::kyc_status,tier=$3,review_answer=$4,review_reject_type=$5,reviewed_at=now(),updated_at=now() WHERE user_id=$1 AND status IN ('pending','on_hold')`, userID, status, tier, answer, reason)
+		if err != nil {
+			return err
+		}
+		if command.RowsAffected() != 1 {
+			return errors.New("kyc application is not reviewable")
+		}
+		if err := tx.Audit().Record(ctx, reviewerID, "kyc.reviewed", "user", userID, map[string]any{"status": status, "tier": tier}); err != nil {
+			return err
+		}
+		return tx.Outbox().Enqueue(ctx, "kyc.status_changed", "user", userID, map[string]any{"user_id": userID, "status": status, "tier": tier})
+	})
 }
 
 type TransferRecipient struct {

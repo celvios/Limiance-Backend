@@ -28,7 +28,6 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 	data := datamanager.New(pool)
 	mux.HandleFunc("GET /readyz", ready(data))
 	mux.HandleFunc("GET /v1", apiIndex)
-	mux.HandleFunc("POST /v1/webhooks/sumsub", sumsubWebhook(cfg.SumsubWebhookKey))
 	if pool != nil {
 		if verifier, err := custody.NewWebhookVerifier(cfg.FireblocksJWKSURL, nil); err == nil {
 			mux.HandleFunc("POST /v1/webhooks/fireblocks", fireblocksWebhook(verifier, data))
@@ -54,10 +53,15 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 		mux.Handle("POST /v1/auth/mfa/step-up", requireSession(authService)(http.HandlerFunc(authHandler.StepUp)))
 		mux.Handle("GET /v1/security/sessions", requireSession(authService)(http.HandlerFunc(authHandler.Sessions)))
 		mux.Handle("DELETE /v1/security/sessions/{session_id}", requireSession(authService)(http.HandlerFunc(authHandler.RevokeSession)))
+		apiKeyHandler := NewAPIKeyHandler(data, cfg.VerificationEncryptionKey)
+		mux.Handle("GET /v1/security/api-keys", requireSession(authService)(http.HandlerFunc(apiKeyHandler.List)))
+		mux.Handle("POST /v1/security/api-keys", requireSession(authService)(http.HandlerFunc(apiKeyHandler.Create)))
+		mux.Handle("DELETE /v1/security/api-keys/{key_id}", requireSession(authService)(http.HandlerFunc(apiKeyHandler.Revoke)))
 		// Customer-profile aliases are kept alongside the security routes to give
 		// the frontend a stable, user-centred API without duplicating state.
 		mux.Handle("GET /v1/user/sessions", requireSession(authService)(http.HandlerFunc(authHandler.Sessions)))
 		mux.Handle("DELETE /v1/user/sessions/{session_id}", requireSession(authService)(http.HandlerFunc(authHandler.RevokeSession)))
+		mux.Handle("DELETE /v1/user/sessions", requireSession(authService)(http.HandlerFunc(authHandler.RevokeOtherSessions)))
 		mux.Handle("PUT /v1/security/anti-phishing-code", requireSession(authService)(http.HandlerFunc(authHandler.SetAntiPhishingCode)))
 		mux.Handle("POST /v1/security/totp/enroll", requireSession(authService)(http.HandlerFunc(authHandler.TOTPEnroll)))
 		mux.Handle("POST /v1/security/totp/confirm", requireSession(authService)(http.HandlerFunc(authHandler.TOTPConfirm)))
@@ -72,13 +76,15 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 		mux.Handle("GET /v1/accounts/balances", requireSession(authService)(http.HandlerFunc(accountHandler.Balances)))
 		mux.Handle("GET /v1/wallet/balances", requireSession(authService)(http.HandlerFunc(accountHandler.WalletBalances)))
 		mux.Handle("GET /v1/accounts/transactions", requireSession(authService)(http.HandlerFunc(accountHandler.Transactions)))
-		mux.Handle("GET /v1/user/profile", requireSession(authService)(http.HandlerFunc(profileHandler.Get)))
+		mux.Handle("GET /v1/user/profile", requireSessionOrAPIKey(authService, data, cfg.VerificationEncryptionKey)(http.HandlerFunc(profileHandler.Get)))
 		mux.Handle("PUT /v1/user/preferences", requireSession(authService)(http.HandlerFunc(profileHandler.Preferences)))
 		var sumsubProvider kyc.SessionProvider
 		if provider, err := kyc.NewClient(kyc.ClientConfig{AppToken: cfg.SumsubAppToken, SecretKey: cfg.SumsubSecretKey, LevelName: cfg.SumsubLevelName}); err == nil {
 			sumsubProvider = provider
 		}
-		kycHandler := NewKYCHandler(kyc.NewSessionService(data, sumsubProvider, cfg.SumsubLevelName), kyc.NewService(data), logger)
+		kycStatusService := kyc.NewService(data)
+		mux.HandleFunc("POST /v1/webhooks/sumsub", sumsubWebhook(cfg.SumsubWebhookKey, data, kycStatusService))
+		kycHandler := NewKYCHandler(kyc.NewSessionService(data, sumsubProvider, cfg.SumsubLevelName), kycStatusService, logger)
 		mux.Handle("POST /v1/kyc/sessions", requireSession(authService)(http.HandlerFunc(kycHandler.CreateSession)))
 		mux.Handle("GET /v1/kyc/status", requireSession(authService)(http.HandlerFunc(kycHandler.Status)))
 		transferHandler := NewTransferHandler(transfers.NewService(data), logger)
@@ -137,6 +143,9 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 		mux.Handle("PUT /v1/admin/users/{user_id}/roles/{role}", requireSession(authService)(http.HandlerFunc(adminHandler.UserRoles)))
 		mux.Handle("DELETE /v1/admin/users/{user_id}/roles/{role}", requireSession(authService)(http.HandlerFunc(adminHandler.UserRoles)))
 		mux.Handle("PUT /v1/admin/conversion-pairs", requireSession(authService)(http.HandlerFunc(adminHandler.ConversionPair)))
+		mux.Handle("GET /v1/admin/kyc/applications", requireSession(authService)(http.HandlerFunc(adminHandler.KYCApplications)))
+		mux.Handle("POST /v1/admin/kyc/{user_id}/approve", requireSession(authService)(http.HandlerFunc(adminHandler.KYCReview)))
+		mux.Handle("POST /v1/admin/kyc/{user_id}/reject", requireSession(authService)(http.HandlerFunc(adminHandler.KYCReview)))
 		mux.Handle("GET /v1/admin/operational-controls/conversions", requireSession(authService)(http.HandlerFunc(adminHandler.ConversionControl)))
 		mux.Handle("PUT /v1/admin/operational-controls/conversions", requireSession(authService)(http.HandlerFunc(adminHandler.ConversionControl)))
 		assetHandler := NewAssetHandler(assets.NewService(data), logger)

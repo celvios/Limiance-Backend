@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/limiance/backend/internal/admin"
 	"github.com/limiance/backend/internal/datamanager"
@@ -244,4 +245,61 @@ func (h *AdminHandler) ConversionControl(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"conversions_enabled": input.Enabled})
+}
+
+func (h *AdminHandler) KYCApplications(w http.ResponseWriter, r *http.Request) {
+	p, ok := principalFromContext(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+		return
+	}
+	items, err := h.service.KYCApplications(r.Context(), p.UserID, r.URL.Query().Get("status"))
+	if errors.Is(err, admin.ErrNotPlatformAdministrator) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "compliance_role_required"})
+		return
+	}
+	if err != nil {
+		h.logger.Error("kyc application list failed", "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "kyc_review_unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"applications": items})
+}
+
+func (h *AdminHandler) KYCReview(w http.ResponseWriter, r *http.Request) {
+	p, ok := principalFromContext(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+	defer r.Body.Close()
+	var input struct {
+		Reason string `json:"reason"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+		return
+	}
+	status := "rejected"
+	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/approve") {
+		status = "approved"
+	}
+	err := h.service.ReviewKYC(r.Context(), p.UserID, r.PathValue("user_id"), status, input.Reason)
+	if errors.Is(err, admin.ErrNotPlatformAdministrator) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "compliance_role_required"})
+		return
+	}
+	if errors.Is(err, admin.ErrInvalidApproval) || errors.Is(err, admin.ErrInvalidRole) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_kyc_review"})
+		return
+	}
+	if err != nil {
+		h.logger.Error("kyc review failed", "error", err)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "kyc_not_reviewable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": status})
 }

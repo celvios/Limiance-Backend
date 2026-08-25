@@ -399,6 +399,21 @@ func (h *AuthHandler) RevokeSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "revoked", "current": id == p.SessionID})
 }
 
+func (h *AuthHandler) RevokeOtherSessions(w http.ResponseWriter, r *http.Request) {
+	p, ok := principalFromContext(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+		return
+	}
+	count, err := h.service.RevokeOtherSessions(r.Context(), p)
+	if err != nil {
+		h.logger.Error("other session revocation failed", "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session_revocation_unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "revoked", "count": count})
+}
+
 func (h *AuthHandler) SetAntiPhishingCode(w http.ResponseWriter, r *http.Request) {
 	p, ok := principalFromContext(r)
 	if !ok {
