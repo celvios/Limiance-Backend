@@ -1,12 +1,13 @@
 param(
-    [switch]$ValidateOnly
+    [switch]$ValidateOnly,
+    [string]$ImageTag = 'staging-phase1-accounts-security-r1'
 )
 
 $ErrorActionPreference = 'Stop'
 
 $Region = 'eu-north-1'
 $Cluster = 'limiance-staging'
-$Image = '041659147758.dkr.ecr.eu-north-1.amazonaws.com/limiance-backend:staging-phase1-accounts-security-r1'
+$Image = "041659147758.dkr.ecr.eu-north-1.amazonaws.com/limiance-backend:$ImageTag"
 $ExecutionRole = 'limiance-staging-ecs-execution'
 $TaskRole = 'limiance-staging-ecs-task'
 $ApiSecurityGroup = 'sg-0b6b43d8368e0db2a'
