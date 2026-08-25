@@ -1,6 +1,7 @@
 param(
     [switch]$ValidateOnly,
-    [string]$ImageTag = 'staging-phase1-accounts-security-r1'
+    [string]$ImageTag = 'staging-phase1-accounts-security-r1',
+    [switch]$BootstrapTestAdministrator
 )
 
 $ErrorActionPreference = 'Stop'
@@ -147,5 +148,15 @@ else {
 & $Aws ecs wait services-stable --region $Region --cluster $Cluster --services $Service
 if ($LASTEXITCODE -ne 0) {
     throw 'ECS service did not reach a stable state. Re-authenticate with aws login, then inspect the service events and CloudWatch logs.'
+}
+if ($BootstrapTestAdministrator) {
+    $BootstrapOverrides = 'containerOverrides=[{name=limiance-api,command=[/app/bootstrap-platform-admin,-email,toluking001@gmail.com,-confirm-staging]}]'
+    $BootstrapRun = & $Aws ecs run-task --region $Region --cluster $Cluster --launch-type FARGATE --task-definition $TaskDefinitionArn --network-configuration $NetworkConfig --overrides $BootstrapOverrides --output json | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or -not $BootstrapRun.tasks -or $BootstrapRun.tasks.Count -eq 0) { throw 'Staging administrator bootstrap task did not start.' }
+    $BootstrapTaskArn = $BootstrapRun.tasks[0].taskArn
+    & $Aws ecs wait tasks-stopped --region $Region --cluster $Cluster --tasks $BootstrapTaskArn
+    $BootstrapStatus = & $Aws ecs describe-tasks --region $Region --cluster $Cluster --tasks $BootstrapTaskArn --output json | ConvertFrom-Json
+    if ($BootstrapStatus.tasks[0].containers[0].exitCode -ne 0) { throw 'Staging administrator bootstrap failed. Check the ECS task logs.' }
+    Write-Host 'Staging administrator bootstrap succeeded.'
 }
 Write-Host 'Migration succeeded. Two API tasks are running.'

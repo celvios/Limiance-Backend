@@ -18,13 +18,19 @@ import (
 
 func main() {
 	email := flag.String("email", "", "email address for the initial platform administrator")
+	confirmStaging := flag.Bool("confirm-staging", false, "explicitly authorize staging bootstrap")
 	flag.Parse()
 	if strings.TrimSpace(*email) == "" {
 		fatal("email is required")
 	}
 	cfg := config.Load()
-	if cfg.Environment != "development" {
-		fatal("bootstrap is restricted to development")
+	if cfg.Environment != "development" && cfg.Environment != "staging" {
+		fatal("bootstrap is restricted to development or staging")
+	}
+	if cfg.Environment == "staging" {
+		if !*confirmStaging || strings.ToLower(strings.TrimSpace(*email)) != "toluking001@gmail.com" {
+			fatal("staging bootstrap requires -confirm-staging and the approved administrator email")
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
