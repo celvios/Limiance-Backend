@@ -56,6 +56,39 @@ func buildMarketSymbol(fromSymbol, toSymbol string) string {
 	return fromSymbol + toSymbol
 }
 
+func (s *Service) conversionPrice(ctx context.Context, fromSymbol, toSymbol, marketSymbol string) (string, bool, error) {
+	if strings.Contains(marketSymbol, "USDC") || strings.Contains(marketSymbol, "USDT") || strings.Contains(marketSymbol, "USD") {
+		ticker, err := s.market.SpotTicker(ctx, marketSymbol)
+		if err != nil {
+			return "", false, err
+		}
+		sellBase := strings.HasPrefix(marketSymbol, fromSymbol)
+		price := ticker.Ask
+		if sellBase {
+			price = ticker.Bid
+		}
+		return price, sellBase, nil
+	}
+
+	fromTicker, err := s.market.SpotTicker(ctx, fromSymbol+"USDT")
+	if err != nil {
+		return "", false, err
+	}
+	toTicker, err := s.market.SpotTicker(ctx, toSymbol+"USDT")
+	if err != nil {
+		return "", false, err
+	}
+	fromPrice, ok := new(big.Rat).SetString(fromTicker.Bid)
+	if !ok || fromPrice.Sign() <= 0 {
+		return "", false, ErrQuoteUnavailable
+	}
+	toPrice, ok := new(big.Rat).SetString(toTicker.Ask)
+	if !ok || toPrice.Sign() <= 0 {
+		return "", false, ErrQuoteUnavailable
+	}
+	return new(big.Rat).Quo(fromPrice, toPrice).FloatString(18), true, nil
+}
+
 func (s *Service) Quote(ctx context.Context, userID string, input QuoteInput) (datamanager.ConversionQuote, error) {
 	input.SourceAccountID = strings.TrimSpace(input.SourceAccountID)
 	input.FromAssetSymbol = strings.ToUpper(strings.TrimSpace(input.FromAssetSymbol))
@@ -69,16 +102,9 @@ func (s *Service) Quote(ctx context.Context, userID string, input QuoteInput) (d
 	if err != nil {
 		return datamanager.ConversionQuote{}, ErrQuoteUnavailable
 	}
-	ticker, err := s.market.SpotTicker(ctx, pair.MarketSymbol)
+	price, sellBase, err := s.conversionPrice(ctx, pair.FromSymbol, pair.ToSymbol, pair.MarketSymbol)
 	if err != nil {
 		return datamanager.ConversionQuote{}, ErrQuoteUnavailable
-	}
-	// The market symbol is intentionally operator-configured. A pair whose first
-	// asset is the base uses bid (customer sells base); reverse uses ask.
-	sellBase := strings.HasPrefix(pair.MarketSymbol, pair.FromSymbol)
-	price := ticker.Ask
-	if sellBase {
-		price = ticker.Bid
 	}
 	out, fee, err := quotedAmounts(input.AmountAtomic, price, pair.FromDecimals, pair.ToDecimals, sellBase, pair.SpreadBPS, pair.FeeBPS)
 	if err != nil {
