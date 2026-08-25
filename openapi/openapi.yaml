@@ -98,6 +98,58 @@ paths:
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '202': { description: Withdrawal submitted for risk evaluation }
+  /notifications:
+    post:
+      summary: Create an in-app notification for the authenticated user
+      description: Internal notification producers use this idempotent endpoint. The same event and reference are a no-op.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateNotificationRequest' }
+      responses:
+        '201':
+          description: Notification created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationResponse' }
+        '200': { description: Existing notification returned for an idempotent retry }
+    get:
+      summary: List the authenticated user's notifications
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+        - name: created_before
+          in: query
+          description: Return notifications created before this RFC3339 timestamp.
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Notifications and unread badge count
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationListResponse' }
+  /notifications/{notification_id}/read:
+    patch:
+      summary: Mark one notification read
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: Notification marked read }
+        '404': { description: Notification not found }
+  /notifications/read-all:
+    patch:
+      summary: Mark all notifications read
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: Notifications marked read }
 components:
   parameters:
     IdempotencyKey:
@@ -126,3 +178,42 @@ components:
           enum:
             - approved_pending_network_enablement
             - approved_pending_custody_enablement
+    CreateNotificationRequest:
+      type: object
+      required: [event_type, reference_id, title, body]
+      properties:
+        event_type: { type: string }
+        reference_id: { type: string, minLength: 1, maxLength: 255 }
+        title: { type: string, maxLength: 200 }
+        body: { type: string, maxLength: 2000 }
+        priority: { type: string, enum: [urgent, high, normal, low] }
+        metadata: { type: object, additionalProperties: true }
+    Notification:
+      type: object
+      required: [id, event_type, reference_id, title, body, priority, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        event_type: { type: string }
+        reference_id: { type: string }
+        title: { type: string }
+        body: { type: string }
+        priority: { type: string, enum: [urgent, high, normal, low] }
+        metadata: { type: object, additionalProperties: true }
+        read_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+    NotificationResponse:
+      type: object
+      required: [notification, created]
+      properties:
+        notification: { $ref: '#/components/schemas/Notification' }
+        created: { type: boolean }
+    NotificationListResponse:
+      type: object
+      required: [notifications, unread_count, limit, has_more]
+      properties:
+        notifications:
+          type: array
+          items: { $ref: '#/components/schemas/Notification' }
+        unread_count: { type: integer, format: int64 }
+        limit: { type: integer }
+        has_more: { type: boolean }

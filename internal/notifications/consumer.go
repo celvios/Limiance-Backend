@@ -17,18 +17,41 @@ type SQSReceiver interface {
 
 type EmailVerifier interface {
 	SendEmailVerification(context.Context, string, string, time.Time) error
+	SendPasswordReset(context.Context, string, string, time.Time) error
+}
+
+type TransactionalEmailSender interface {
+	SendTransactionalEmail(context.Context, string, TransactionalEmail) error
+}
+
+type PushSender interface {
+	SendPush(context.Context, string, string, string, TransactionalEmail) error
+}
+
+type stubPushSender struct{}
+
+func (stubPushSender) SendPush(context.Context, string, string, string, TransactionalEmail) error {
+	// TODO: deliver urgent notifications through APNs/FCM.
+	return nil
 }
 
 type Consumer struct {
 	queue         SQSReceiver
 	email         EmailVerifier
+	push          PushSender
 	encryptionKey string
+	store         any
+}
+
+func (c *Consumer) WithStore(store NotificationStore) *Consumer {
+	c.store = store
+	return c
 }
 
 var ErrUnexpectedEvent = errors.New("unexpected event on notifications queue")
 
 func NewConsumer(receiver SQSReceiver, email EmailVerifier, encryptionKey string) *Consumer {
-	return &Consumer{queue: receiver, email: email, encryptionKey: encryptionKey}
+	return &Consumer{queue: receiver, email: email, push: stubPushSender{}, encryptionKey: encryptionKey}
 }
 
 func (c *Consumer) RunOnce(ctx context.Context) (int, error) {
@@ -38,8 +61,18 @@ func (c *Consumer) RunOnce(ctx context.Context) (int, error) {
 	}
 	processed := 0
 	for _, message := range messages {
-		if message.Event.Type != "email.verification_requested" {
+		if message.Event.Type != "email.verification_requested" && message.Event.Type != "email.password_reset_requested" && !IsRoutedEvent(message.Event.Type) {
 			return processed, ErrUnexpectedEvent
+		}
+		if message.Event.Type != "email.verification_requested" && message.Event.Type != "email.password_reset_requested" {
+			if err := c.processNotification(ctx, message.Event); err != nil {
+				return processed, err
+			}
+			if err := c.queue.Delete(ctx, message.ReceiptHandle); err != nil {
+				return processed, err
+			}
+			processed++
+			continue
 		}
 		var payload struct {
 			Email          string `json:"email"`
@@ -63,8 +96,14 @@ func (c *Consumer) RunOnce(ctx context.Context) (int, error) {
 			}
 			continue
 		}
-		if err := c.email.SendEmailVerification(ctx, payload.Email, code, expiresAt); err != nil {
-			return processed, err
+		var sendErr error
+		if message.Event.Type == "email.password_reset_requested" {
+			sendErr = c.email.SendPasswordReset(ctx, payload.Email, code, expiresAt)
+		} else {
+			sendErr = c.email.SendEmailVerification(ctx, payload.Email, code, expiresAt)
+		}
+		if sendErr != nil {
+			return processed, sendErr
 		}
 		if err := c.queue.Delete(ctx, message.ReceiptHandle); err != nil {
 			return processed, err

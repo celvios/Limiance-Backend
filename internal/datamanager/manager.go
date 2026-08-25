@@ -9,10 +9,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/limiance/backend/internal/platform/queue"
 )
 
 type Manager struct{ pool *pgxpool.Pool }
@@ -23,10 +25,156 @@ func New(pool *pgxpool.Pool) *Manager { return &Manager{pool: pool} }
 
 func (m *Manager) Ping(ctx context.Context) error { return m.pool.Ping(ctx) }
 
+type UserProfile struct {
+	UserID            string `json:"user_id"`
+	UID               int64  `json:"uid"`
+	Email             string `json:"email"`
+	DisplayName       string `json:"display_name"`
+	KYCStatus         string `json:"kyc_status"`
+	KYCTier           int16  `json:"kyc_tier"`
+	PreferredCurrency string `json:"preferred_currency"`
+	PreferredLanguage string `json:"preferred_language"`
+	PreferredTheme    string `json:"preferred_theme"`
+}
+
+type PasswordResetUser struct {
+	ID    string
+	Email string
+}
+
+func (m *Manager) UserProfile(ctx context.Context, userID string) (UserProfile, error) {
+	var profile UserProfile
+	err := m.pool.QueryRow(ctx, `SELECT u.id::text,u.uid,u.email,u.display_name,COALESCE(k.status::text,'not_started'),COALESCE(k.tier,0),u.preferred_currency,u.preferred_language,u.preferred_theme FROM users u LEFT JOIN kyc_profiles k ON k.user_id=u.id WHERE u.id=$1`, userID).Scan(&profile.UserID, &profile.UID, &profile.Email, &profile.DisplayName, &profile.KYCStatus, &profile.KYCTier, &profile.PreferredCurrency, &profile.PreferredLanguage, &profile.PreferredTheme)
+	return profile, err
+}
+
+func (m *Manager) UpdateUserPreferences(ctx context.Context, userID, displayName, currency, language, theme string) (UserProfile, error) {
+	tx, err := m.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return UserProfile{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err = tx.Exec(ctx, `UPDATE users SET display_name=$2,preferred_currency=$3,preferred_language=$4,preferred_theme=$5,updated_at=now() WHERE id=$1 AND status='active'`, userID, displayName, currency, language, theme); err != nil {
+		return UserProfile{}, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(actor_id,actor_type,action,resource_type,resource_id,metadata) VALUES($1,'user','user.preferences_updated','user',$1,'{}')`, userID); err != nil {
+		return UserProfile{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return UserProfile{}, err
+	}
+	return m.UserProfile(ctx, userID)
+}
+
 func (m *Manager) LoginUser(ctx context.Context, email string) (LoginUser, error) {
 	var user LoginUser
 	err := m.pool.QueryRow(ctx, `SELECT u.id::text, u.password_hash, u.status, EXISTS (SELECT 1 FROM totp_credentials t WHERE t.user_id = u.id AND t.enabled_at IS NOT NULL AND t.disabled_at IS NULL) FROM users u WHERE u.email = $1`, email).Scan(&user.ID, &user.PasswordHash, &user.Status, &user.TOTPEnabled)
 	return user, err
+}
+
+func (m *Manager) PasswordResetUser(ctx context.Context, email string) (PasswordResetUser, error) {
+	var user PasswordResetUser
+	err := m.pool.QueryRow(ctx, `SELECT id::text,email FROM users WHERE email=$1 AND status='active'`, email).Scan(&user.ID, &user.Email)
+	return user, err
+}
+
+func (m *Manager) CreatePasswordResetChallenge(ctx context.Context, userID string, codeHash []byte, expiresAt time.Time, emailPayload any) error {
+	return m.WithinTransaction(ctx, func(tx *Transaction) error {
+		if _, err := tx.audit.tx.Exec(ctx, `UPDATE password_reset_challenges SET consumed_at=now() WHERE user_id=$1 AND consumed_at IS NULL`, userID); err != nil {
+			return err
+		}
+		if _, err := tx.audit.tx.Exec(ctx, `INSERT INTO password_reset_challenges (user_id,code_hash,expires_at) VALUES ($1,$2,$3)`, userID, codeHash, expiresAt); err != nil {
+			return err
+		}
+		if err := tx.Audit().Record(ctx, "system", "password_reset.requested", "user", userID, map[string]string{}); err != nil {
+			return err
+		}
+		return tx.Outbox().Enqueue(ctx, "email.password_reset_requested", "user", userID, emailPayload)
+	})
+}
+
+// ResetPassword consumes a one-time code before changing credentials and
+// revoking every active session in the same transaction.
+func (m *Manager) ResetPassword(ctx context.Context, email string, suppliedHash []byte, passwordHash string) (bool, error) {
+	tx, err := m.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var challengeID, userID string
+	var storedHash []byte
+	var expiresAt time.Time
+	var attempts int16
+	err = tx.QueryRow(ctx, `SELECT c.id::text,c.user_id::text,c.code_hash,c.expires_at,c.attempts FROM password_reset_challenges c JOIN users u ON u.id=c.user_id WHERE u.email=$1 AND u.status='active' AND c.consumed_at IS NULL ORDER BY c.created_at DESC LIMIT 1 FOR UPDATE`, email).Scan(&challengeID, &userID, &storedHash, &expiresAt, &attempts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if expiresAt.Before(time.Now()) || attempts >= 5 || subtle.ConstantTimeCompare(storedHash, suppliedHash) != 1 {
+		_, err = tx.Exec(ctx, `UPDATE password_reset_challenges SET attempts=LEAST(attempts+1,5) WHERE id=$1`, challengeID)
+		return false, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE password_reset_challenges SET consumed_at=now() WHERE id=$1`, challengeID); err != nil {
+		return false, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE users SET password_hash=$2,updated_at=now() WHERE id=$1`, userID, passwordHash); err != nil {
+		return false, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL`, userID); err != nil {
+		return false, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(actor_id,actor_type,action,resource_type,resource_id,metadata) VALUES($1,'user','password_reset.completed','user',$1,'{}')`, userID); err != nil {
+		return false, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO outbox_events(event_type,aggregate_type,aggregate_id,payload) VALUES('security.password_changed','user',$1,jsonb_build_object('user_id',$1))`, userID); err != nil {
+		return false, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (m *Manager) CreateMFAStepUpChallenge(ctx context.Context, userID, sessionID, purpose string, tokenHash []byte, expiresAt time.Time) error {
+	return m.WithinTransaction(ctx, func(tx *Transaction) error {
+		if _, err := tx.audit.tx.Exec(ctx, `INSERT INTO mfa_step_up_challenges (user_id,session_id,purpose,token_hash,expires_at) VALUES ($1,$2,$3,$4,$5)`, userID, sessionID, purpose, tokenHash, expiresAt); err != nil {
+			return err
+		}
+		return tx.Audit().Record(ctx, "user", "mfa.step_up_completed", "session", sessionID, map[string]string{"purpose": purpose})
+	})
+}
+
+// CreateMFARecoveryRequest is intentionally a request for an audited human
+// review, never an automatic TOTP reset.
+func (m *Manager) CreateMFARecoveryRequest(ctx context.Context, email, reason string) (bool, error) {
+	tx, err := m.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var userID string
+	err = tx.QueryRow(ctx, `SELECT id::text FROM users WHERE email=$1 AND status='active' FOR UPDATE`, email).Scan(&userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO mfa_recovery_requests(user_id,reason) VALUES($1,$2)`, userID, reason); err != nil {
+		return false, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(actor_id,actor_type,action,resource_type,resource_id,metadata) VALUES($1,'user','mfa.recovery_requested','user',$1,'{}')`, userID); err != nil {
+		return false, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO outbox_events(event_type,aggregate_type,aggregate_id,payload) VALUES('security.mfa_recovery_requested','user',$1,jsonb_build_object('user_id',$1))`, userID); err != nil {
+		return false, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (m *Manager) StartTOTPEnrollment(ctx context.Context, userID, secretCiphertext string) error {
@@ -45,13 +193,36 @@ func (m *Manager) TOTPSecret(ctx context.Context, userID string, enabledOnly boo
 }
 
 func (m *Manager) EnableTOTP(ctx context.Context, userID string) (bool, error) {
-	command, err := m.pool.Exec(ctx, `UPDATE totp_credentials SET enabled_at=now(),updated_at=now() WHERE user_id=$1 AND enabled_at IS NULL AND disabled_at IS NULL`, userID)
-	return command.RowsAffected() == 1, err
+	return m.setTOTPState(ctx, userID, true)
 }
 
 func (m *Manager) DisableTOTP(ctx context.Context, userID string) (bool, error) {
-	command, err := m.pool.Exec(ctx, `UPDATE totp_credentials SET disabled_at=now(),updated_at=now() WHERE user_id=$1 AND enabled_at IS NOT NULL AND disabled_at IS NULL`, userID)
-	return command.RowsAffected() == 1, err
+	return m.setTOTPState(ctx, userID, false)
+}
+
+func (m *Manager) setTOTPState(ctx context.Context, userID string, enabled bool) (bool, error) {
+	tx, err := m.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	query := `UPDATE totp_credentials SET enabled_at=now(),updated_at=now() WHERE user_id=$1 AND enabled_at IS NULL AND disabled_at IS NULL`
+	eventType := "security.2fa_enabled"
+	if !enabled {
+		query = `UPDATE totp_credentials SET disabled_at=now(),updated_at=now() WHERE user_id=$1 AND enabled_at IS NOT NULL AND disabled_at IS NULL`
+		eventType = "security.2fa_disabled"
+	}
+	command, err := tx.Exec(ctx, query, userID)
+	if err != nil || command.RowsAffected() != 1 {
+		return command.RowsAffected() == 1, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(actor_id,actor_type,action,resource_type,resource_id) VALUES($1,'user',$2,'user',$1)`, userID, eventType); err != nil {
+		return false, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO outbox_events(event_type,aggregate_type,aggregate_id,payload) VALUES($1,'user',$2,jsonb_build_object('user_id',$2))`, eventType, userID); err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
 }
 
 func (m *Manager) CreateMFALoginChallenge(ctx context.Context, userID string, tokenHash []byte, expiresAt time.Time, meta SessionMetadata) error {
@@ -73,6 +244,17 @@ type SessionMetadata struct {
 	UserAgent string
 	ClientIP  string
 }
+
+// SessionDeviceKnown is a conservative device fingerprint for notification
+// purposes only; it is not an authentication factor. A durable browser/device
+// registry belongs with the broader security work, but this prevents routine
+// logins from producing a "new device" alert every time.
+func (m *Manager) SessionDeviceKnown(ctx context.Context, userID string, meta SessionMetadata) (bool, error) {
+	var known bool
+	err := m.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sessions WHERE user_id=$1 AND user_agent=$2 AND COALESCE(client_ip::text,'')=$3)`, userID, meta.UserAgent, meta.ClientIP).Scan(&known)
+	return known, err
+}
+
 type SessionInfo struct {
 	ID         string    `json:"id"`
 	UserAgent  string    `json:"user_agent"`
@@ -490,7 +672,7 @@ func (m *Manager) CreateInternalTransfer(ctx context.Context, input TransferInpu
 	if err != nil {
 		return TransferResult{}, err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO outbox_events (event_type,aggregate_type,aggregate_id,payload) VALUES ('transfer.posted','transfer',$1,$2::jsonb)`, result.TransferID, payload); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO outbox_events (event_type,aggregate_type,aggregate_id,payload) VALUES ('transfer.completed','transfer',$1,$2::jsonb)`, result.TransferID, payload); err != nil {
 		return TransferResult{}, err
 	}
 	return result, tx.Commit(ctx)
@@ -510,15 +692,163 @@ type AccountBalance struct {
 	LockedAtomic    string
 }
 
+// TransactionHistoryItem is an immutable ledger posting visible to one of a
+// user's accounts. Amounts are atomic strings so clients never lose precision.
+// A posting, rather than a mutable "transaction" projection, is returned so
+// the API remains auditable as new workflow types are introduced.
+type TransactionHistoryItem struct {
+	PostingID     int64     `json:"posting_id"`
+	JournalID     string    `json:"journal_id"`
+	ReferenceType string    `json:"reference_type"`
+	ReferenceID   string    `json:"reference_id"`
+	AccountID     string    `json:"account_id"`
+	AccountKind   string    `json:"account_kind"`
+	AccountName   string    `json:"account_name"`
+	AssetSymbol   string    `json:"asset_symbol"`
+	Network       string    `json:"network"`
+	Bucket        string    `json:"bucket"`
+	Direction     string    `json:"direction"`
+	AmountAtomic  string    `json:"amount_atomic"`
+	OccurredAt    time.Time `json:"occurred_at"`
+}
+
 type Notification struct {
-	ID        string          `json:"id"`
-	EventType string          `json:"event_type"`
-	Title     string          `json:"title"`
-	Body      string          `json:"body"`
-	Priority  string          `json:"priority"`
-	Metadata  json.RawMessage `json:"metadata"`
-	ReadAt    *time.Time      `json:"read_at"`
-	CreatedAt time.Time       `json:"created_at"`
+	ID          string          `json:"id"`
+	EventType   string          `json:"event_type"`
+	ReferenceID string          `json:"reference_id"`
+	Title       string          `json:"title"`
+	Body        string          `json:"body"`
+	Priority    string          `json:"priority"`
+	Metadata    json.RawMessage `json:"metadata"`
+	ReadAt      *time.Time      `json:"read_at"`
+	CreatedAt   time.Time       `json:"created_at"`
+}
+
+type NotificationInput struct {
+	UserID      string
+	EventType   string
+	ReferenceID string
+	Title       string
+	Body        string
+	Priority    string
+	Metadata    json.RawMessage
+}
+
+type NotificationRecipient struct {
+	UserID string
+	Email  string
+}
+
+// CreateNotification records a notification once for a business event. The
+// unique (user_id, event_type, reference_id) key is the idempotency boundary
+// for redelivered queue messages.
+func (m *Manager) CreateNotification(ctx context.Context, input NotificationInput) (Notification, bool, error) {
+	if input.Metadata == nil {
+		input.Metadata = json.RawMessage(`{}`)
+	}
+	var item Notification
+	var created bool
+	err := m.pool.QueryRow(ctx, `
+		INSERT INTO notifications (user_id,event_type,reference_id,title,body,priority,metadata)
+		VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
+		ON CONFLICT (user_id,event_type,reference_id) DO UPDATE SET id=notifications.id
+		RETURNING id::text,event_type,reference_id,title,body,priority,metadata,read_at,created_at,(xmax = 0)`,
+		input.UserID, input.EventType, input.ReferenceID, input.Title, input.Body, input.Priority, input.Metadata,
+	).Scan(&item.ID, &item.EventType, &item.ReferenceID, &item.Title, &item.Body, &item.Priority, &item.Metadata, &item.ReadAt, &item.CreatedAt, &created)
+	if err != nil {
+		return Notification{}, false, err
+	}
+	return item, created, nil
+}
+
+func (m *Manager) NotificationDeliveryComplete(ctx context.Context, notificationID, channel, destination string) (bool, error) {
+	var delivered bool
+	err := m.pool.QueryRow(ctx, `SELECT delivered_at IS NOT NULL FROM notification_deliveries WHERE notification_id=$1 AND channel=$2 AND destination=$3`, notificationID, channel, destination).Scan(&delivered)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return delivered, err
+}
+
+func (m *Manager) MarkNotificationDeliveryComplete(ctx context.Context, notificationID, channel, destination string) error {
+	_, err := m.pool.Exec(ctx, `INSERT INTO notification_deliveries (notification_id,channel,destination,delivered_at,attempts,last_attempt_at) VALUES ($1,$2,$3,now(),1,now()) ON CONFLICT (notification_id,channel,destination) DO UPDATE SET delivered_at=now(),attempts=notification_deliveries.attempts+1,last_attempt_at=now()`, notificationID, channel, destination)
+	return err
+}
+
+func (m *Manager) RecordNotificationDeliveryAttempt(ctx context.Context, notificationID, channel, destination string) error {
+	_, err := m.pool.Exec(ctx, `INSERT INTO notification_deliveries (notification_id,channel,destination,attempts,last_attempt_at) VALUES ($1,$2,$3,1,now()) ON CONFLICT (notification_id,channel,destination) DO UPDATE SET attempts=notification_deliveries.attempts+1,last_attempt_at=now()`, notificationID, channel, destination)
+	return err
+}
+
+// NotificationRecipients resolves PII only inside the persistence adapter.
+// Queue payloads may contain a user id for security events, while financial
+// aggregates are joined here so producers do not need to duplicate email
+// addresses in every outbox event.
+func (m *Manager) NotificationRecipients(ctx context.Context, event queue.Event, payload map[string]any) ([]NotificationRecipient, error) {
+	type recipient struct{ userID, email string }
+	recipients := make([]recipient, 0, 2)
+	add := func(userID, email string) {
+		if userID == "" && email == "" {
+			return
+		}
+		for _, existing := range recipients {
+			if (userID != "" && existing.userID == userID) || (email != "" && existing.email == email) {
+				return
+			}
+		}
+		recipients = append(recipients, recipient{userID: userID, email: email})
+	}
+	if userID, ok := payload["user_id"].(string); ok && userID != "" {
+		var email string
+		if err := m.pool.QueryRow(ctx, `SELECT email FROM users WHERE id=$1 AND status='active'`, userID).Scan(&email); err != nil {
+			return nil, err
+		}
+		add(userID, email)
+	}
+	if event.Type == "email.verification_requested" || event.Type == "email.password_reset_requested" {
+		if email, ok := payload["email"].(string); ok && email != "" {
+			var userID string
+			if err := m.pool.QueryRow(ctx, `SELECT id::text FROM users WHERE email=$1 AND status='active'`, email).Scan(&userID); err != nil {
+				return nil, err
+			}
+			add(userID, email)
+		}
+	}
+	switch event.Type {
+	case "deposit.submitted", "deposit.confirming", "deposit.credited", "deposit.failed":
+		var userID, email string
+		if err := m.pool.QueryRow(ctx, `SELECT u.id::text,u.email FROM deposits d JOIN users u ON u.id=d.user_id WHERE d.id=$1 AND u.status='active'`, event.AggregateID).Scan(&userID, &email); err != nil {
+			return nil, err
+		}
+		add(userID, email)
+	case "withdrawal.submitted", "withdrawal.under_review", "withdrawal.approved", "withdrawal.completed", "withdrawal.rejected":
+		var userID, email string
+		if err := m.pool.QueryRow(ctx, `SELECT u.id::text,u.email FROM withdrawals w JOIN users u ON u.id=w.user_id WHERE w.id=$1 AND u.status='active'`, event.AggregateID).Scan(&userID, &email); err != nil {
+			return nil, err
+		}
+		add(userID, email)
+	case "transfer.completed":
+		rows, err := m.pool.Query(ctx, `SELECT u.id::text,u.email FROM transfers t JOIN accounts a ON a.id IN (t.source_account_id,t.destination_account_id) JOIN users u ON u.id=a.user_id WHERE t.id=$1 AND u.status='active'`, event.AggregateID)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var userID, email string
+			if err := rows.Scan(&userID, &email); err != nil {
+				return nil, err
+			}
+			add(userID, email)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	result := make([]NotificationRecipient, 0, len(recipients))
+	for _, item := range recipients {
+		result = append(result, NotificationRecipient{UserID: item.userID, Email: item.email})
+	}
+	return result, nil
 }
 
 type NotificationDevice struct {
@@ -528,8 +858,21 @@ type NotificationDevice struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func (m *Manager) Notifications(ctx context.Context, userID string, limit int) ([]Notification, error) {
-	rows, err := m.pool.Query(ctx, `SELECT id::text,event_type,title,body,priority,metadata,read_at,created_at FROM notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2`, userID, limit)
+type NotificationDeviceRecipient struct {
+	Platform string
+	Token    string
+}
+
+func (m *Manager) Notifications(ctx context.Context, userID string, limit int, createdBefore *time.Time) ([]Notification, error) {
+	query := `SELECT id::text,event_type,reference_id,title,body,priority,metadata,read_at,created_at FROM notifications WHERE user_id=$1`
+	args := []any{userID}
+	if createdBefore != nil {
+		query += ` AND created_at < $2`
+		args = append(args, *createdBefore)
+	}
+	query += ` ORDER BY created_at DESC LIMIT $` + strconv.Itoa(len(args)+1)
+	args = append(args, limit)
+	rows, err := m.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -537,12 +880,18 @@ func (m *Manager) Notifications(ctx context.Context, userID string, limit int) (
 	items := make([]Notification, 0)
 	for rows.Next() {
 		var item Notification
-		if err := rows.Scan(&item.ID, &item.EventType, &item.Title, &item.Body, &item.Priority, &item.Metadata, &item.ReadAt, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.EventType, &item.ReferenceID, &item.Title, &item.Body, &item.Priority, &item.Metadata, &item.ReadAt, &item.CreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (m *Manager) UnreadNotificationCount(ctx context.Context, userID string) (int64, error) {
+	var count int64
+	err := m.pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE user_id=$1 AND read_at IS NULL`, userID).Scan(&count)
+	return count, err
 }
 
 func (m *Manager) MarkNotificationRead(ctx context.Context, userID, notificationID string) (bool, error) {
@@ -555,10 +904,32 @@ func (m *Manager) MarkNotificationUnread(ctx context.Context, userID, notificati
 	return command.RowsAffected() == 1, err
 }
 
+func (m *Manager) MarkAllNotificationsRead(ctx context.Context, userID string) (int64, error) {
+	command, err := m.pool.Exec(ctx, `UPDATE notifications SET read_at=now() WHERE user_id=$1 AND read_at IS NULL`, userID)
+	return command.RowsAffected(), err
+}
+
 func (m *Manager) UpsertNotificationDevice(ctx context.Context, userID, platform, token string) (NotificationDevice, error) {
 	var device NotificationDevice
 	err := m.pool.QueryRow(ctx, `INSERT INTO notification_devices (user_id,platform,token,status) VALUES ($1,$2,$3,'active') ON CONFLICT (token) DO UPDATE SET user_id=EXCLUDED.user_id,platform=EXCLUDED.platform,status='active',updated_at=now() RETURNING id::text,platform,status,created_at`, userID, platform, token).Scan(&device.ID, &device.Platform, &device.Status, &device.CreatedAt)
 	return device, err
+}
+
+func (m *Manager) NotificationDeviceRecipients(ctx context.Context, userID string) ([]NotificationDeviceRecipient, error) {
+	rows, err := m.pool.Query(ctx, `SELECT platform,token FROM notification_devices WHERE user_id=$1 AND status='active'`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	devices := make([]NotificationDeviceRecipient, 0)
+	for rows.Next() {
+		var device NotificationDeviceRecipient
+		if err := rows.Scan(&device.Platform, &device.Token); err != nil {
+			return nil, err
+		}
+		devices = append(devices, device)
+	}
+	return devices, rows.Err()
 }
 
 // AccountBalances returns balances calculated from immutable, posted journal
@@ -591,6 +962,37 @@ func (m *Manager) AccountBalances(ctx context.Context, userID string) ([]Account
 		balances = append(balances, balance)
 	}
 	return balances, rows.Err()
+}
+
+// AccountTransactionHistory reads posted ledger entries only. cursor is the
+// last posting id from the prior page; it intentionally contains no user data.
+func (m *Manager) AccountTransactionHistory(ctx context.Context, userID, accountKind string, limit int, cursor int64) ([]TransactionHistoryItem, error) {
+	rows, err := m.pool.Query(ctx, `
+		SELECT p.id,j.id::text,j.reference_type,j.reference_id,a.id::text,
+			a.kind::text,a.name,asset.symbol,asset.network,p.bucket::text,
+			p.direction,p.amount_atomic::text,j.created_at
+		FROM postings p
+		JOIN journals j ON j.id=p.journal_id AND j.status='posted'
+		JOIN accounts a ON a.id=p.account_id
+		JOIN assets asset ON asset.id=p.asset_id
+		WHERE a.user_id=$1 AND a.status='active'
+			AND ($2='' OR a.kind::text=$2)
+			AND ($3::bigint=0 OR p.id<$3)
+		ORDER BY p.id DESC
+		LIMIT $4`, userID, accountKind, cursor, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]TransactionHistoryItem, 0)
+	for rows.Next() {
+		var item TransactionHistoryItem
+		if err := rows.Scan(&item.PostingID, &item.JournalID, &item.ReferenceType, &item.ReferenceID, &item.AccountID, &item.AccountKind, &item.AccountName, &item.AssetSymbol, &item.Network, &item.Bucket, &item.Direction, &item.AmountAtomic, &item.OccurredAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 type DepositHistoryItem struct {
@@ -749,13 +1151,13 @@ type CustodyWallet struct {
 }
 
 type DepositAddress struct {
-	ID                string
-	AssetSymbol       string
-	Network           string
-	Address           string
-	Tag               string
-	ProviderAddressID string
-	Status            string
+	ID                string `json:"id"`
+	AssetSymbol       string `json:"asset_symbol"`
+	Network           string `json:"network"`
+	Address           string `json:"address"`
+	Tag               string `json:"tag"`
+	ProviderAddressID string `json:"provider_address_id"`
+	Status            string `json:"status"`
 }
 
 // DepositAsset returns only an individually enabled route with a verified
@@ -955,6 +1357,13 @@ func (m *Manager) ApplyDepositObservation(ctx context.Context, event DepositObse
 	if err != nil {
 		return false, err
 	}
+	var existingDepositID, existingDepositStatus string
+	err = tx.QueryRow(ctx, `SELECT id::text,status FROM deposits WHERE provider_transaction_id=$1 AND blockchain_index=$2`, event.ProviderTransactionID, event.BlockchainIndex).Scan(&existingDepositID, &existingDepositStatus)
+	if errors.Is(err, pgx.ErrNoRows) {
+		existingDepositID, existingDepositStatus = "", ""
+	} else if err != nil {
+		return false, err
+	}
 	status := "confirming"
 	if event.Status == "FAILED" || event.Status == "REJECTED" {
 		status = "reorged"
@@ -964,6 +1373,25 @@ func (m *Manager) ApplyDepositObservation(ctx context.Context, event DepositObse
 	command, err := tx.Exec(ctx, `INSERT INTO deposits (user_id, asset_id, deposit_address_id, custody_wallet_id, provider_transaction_id, transaction_hash, blockchain_index, amount_atomic, confirmations, confirmations_required, status, block_hash, block_height) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT (provider_transaction_id, blockchain_index) DO UPDATE SET confirmations = GREATEST(deposits.confirmations, EXCLUDED.confirmations), transaction_hash = CASE WHEN EXCLUDED.transaction_hash <> '' THEN EXCLUDED.transaction_hash ELSE deposits.transaction_hash END, block_hash = CASE WHEN EXCLUDED.block_hash <> '' THEN EXCLUDED.block_hash ELSE deposits.block_hash END, block_height = CASE WHEN EXCLUDED.block_height <> '' THEN EXCLUDED.block_height ELSE deposits.block_height END, status = CASE WHEN deposits.status IN ('credited','reorged','rejected') THEN deposits.status ELSE EXCLUDED.status END, updated_at = now()`, userID, assetID, addressID, walletID, event.ProviderTransactionID, event.TransactionHash, event.BlockchainIndex, event.AmountAtomic, event.Confirmations, required, status, event.BlockHash, event.BlockHeight)
 	if err != nil {
 		return false, err
+	}
+	if existingDepositID == "" || (status == "confirming" && existingDepositStatus != "credited" && existingDepositStatus != "reorged" && existingDepositStatus != "rejected") || event.Status == "FAILED" || event.Status == "REJECTED" {
+		eventType := "deposit.confirming"
+		if event.Status == "FAILED" || event.Status == "REJECTED" {
+			eventType = "deposit.failed"
+		} else if existingDepositID == "" {
+			eventType = "deposit.submitted"
+		}
+		payload, err := json.Marshal(map[string]any{
+			"user_id":      userID,
+			"amount_atomic": event.AmountAtomic,
+			"confirmations": event.Confirmations,
+		})
+		if err != nil {
+			return false, err
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO outbox_events (event_type,aggregate_type,aggregate_id,payload) SELECT $1,'deposit',d.id,$2::jsonb FROM deposits d WHERE d.provider_transaction_id=$3 AND d.blockchain_index=$4`, eventType, payload, event.ProviderTransactionID, event.BlockchainIndex); err != nil {
+			return false, err
+		}
 	}
 	// A confirmed, unflagged deposit is credited automatically. Manual review is
 	// reserved for a risk worker that explicitly changes risk_status to pending
@@ -1223,6 +1651,11 @@ func (m *Manager) ApproveWithdrawal(ctx context.Context, approverID, withdrawalI
 	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(actor_id,actor_type,action,resource_type,resource_id,metadata) VALUES($1,'user','withdrawal.approved','withdrawal',$2,$3::jsonb)`, approverID, withdrawalID, metadata); err != nil {
 		return WithdrawalApprovalResult{}, err
 	}
+	if status == "approved" {
+		if _, err = tx.Exec(ctx, `INSERT INTO outbox_events (event_type,aggregate_type,aggregate_id,payload) VALUES ('withdrawal.approved','withdrawal',$1,$2::jsonb)`, withdrawalID, metadata); err != nil {
+			return WithdrawalApprovalResult{}, err
+		}
+	}
 	return WithdrawalApprovalResult{WithdrawalID: withdrawalID, ApprovalCount: count, Status: status}, tx.Commit(ctx)
 }
 
@@ -1403,7 +1836,10 @@ func (m *Manager) RequestWithdrawal(ctx context.Context, input WithdrawalInput) 
 	if _, err = tx.Exec(ctx, `INSERT INTO audit_events (actor_id,actor_type,action,resource_type,resource_id,metadata) VALUES ($1,'user','withdrawal.requested','withdrawal',$2,$3::jsonb)`, input.UserID, result.WithdrawalID, payload); err != nil {
 		return WithdrawalResult{}, err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO outbox_events (event_type,aggregate_type,aggregate_id,payload) VALUES ('withdrawal.requested','withdrawal',$1,$2::jsonb)`, result.WithdrawalID, payload); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO outbox_events (event_type,aggregate_type,aggregate_id,payload) VALUES ('withdrawal.submitted','withdrawal',$1,$2::jsonb)`, result.WithdrawalID, payload); err != nil {
+		return WithdrawalResult{}, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO outbox_events (event_type,aggregate_type,aggregate_id,payload) VALUES ('withdrawal.under_review','withdrawal',$1,$2::jsonb)`, result.WithdrawalID, payload); err != nil {
 		return WithdrawalResult{}, err
 	}
 	return result, tx.Commit(ctx)

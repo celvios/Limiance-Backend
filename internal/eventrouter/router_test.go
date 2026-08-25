@@ -6,12 +6,26 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/limiance/backend/internal/notifications"
 	"github.com/limiance/backend/internal/platform/queue"
 )
 
 type receiverStub struct {
 	messages []queue.ReceivedEvent
 	deleted  []string
+}
+
+func TestNotificationEventAllowListContainsTaskOneEvents(t *testing.T) {
+	for _, eventType := range []string{
+		"deposit.submitted", "deposit.confirming", "deposit.credited", "deposit.failed",
+		"withdrawal.submitted", "withdrawal.under_review", "withdrawal.approved", "withdrawal.completed", "withdrawal.rejected",
+		"transfer.completed",
+		"security.new_device_login", "security.password_changed", "security.2fa_enabled", "security.2fa_disabled", "security.api_key_created",
+	} {
+		if !notifications.IsRoutedEvent(eventType) {
+			t.Fatalf("%q is not routed to notifications", eventType)
+		}
+	}
 }
 
 func (s *receiverStub) Receive(_ context.Context, _ int32) ([]queue.ReceivedEvent, error) {

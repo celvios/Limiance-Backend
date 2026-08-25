@@ -33,6 +33,40 @@ type SendGrid struct {
 	client    *http.Client
 }
 
+// TransactionalEmail is rendered by the notification worker after it has
+// resolved an outbox event to a user. It intentionally contains no recipient
+// identity; that remains an explicit argument to the delivery adapter.
+type TransactionalEmail struct {
+	Subject string
+	Title   string
+	Body    string
+}
+
+// TemplateForEvent returns the approved transactional copy for notification
+// events. Keep this as an explicit allow-list so an arbitrary outbox payload
+// can never become an email template.
+func TemplateForEvent(eventType string) (TransactionalEmail, bool) {
+	templates := map[string]TransactionalEmail{
+		"deposit.submitted":         {"Deposit detected", "Deposit detected", "We detected your deposit and will update you as confirmations arrive."},
+		"deposit.confirming":        {"Deposit confirming", "Your deposit is confirming", "Your deposit is awaiting the required blockchain confirmations."},
+		"deposit.credited":          {"Deposit credited", "Your deposit is available", "Your deposit has been credited to your Funding account."},
+		"deposit.failed":            {"Deposit update", "Your deposit could not be processed", "Your deposit was not credited. Contact support if you need assistance."},
+		"withdrawal.submitted":      {"Withdrawal submitted", "Withdrawal submitted", "Your withdrawal request has been received and is awaiting review."},
+		"withdrawal.under_review":   {"Withdrawal under review", "Withdrawal under review", "Your withdrawal requires additional review before it can be processed."},
+		"withdrawal.approved":       {"Withdrawal approved", "Withdrawal approved", "Your withdrawal has passed approval and will be submitted for processing."},
+		"withdrawal.completed":      {"Withdrawal completed", "Withdrawal completed", "Your withdrawal has been completed."},
+		"withdrawal.rejected":       {"Withdrawal rejected", "Withdrawal rejected", "Your withdrawal was rejected. Contact support if you need assistance."},
+		"transfer.completed":        {"Transfer completed", "Transfer completed", "Your transfer has been completed."},
+		"security.new_device_login": {"New sign-in", "New sign-in to your Limiance account", "A new device signed in to your Limiance account. If this was not you, secure your account immediately."},
+		"security.password_changed": {"Password changed", "Your password was changed", "Your Limiance password was changed. If this was not you, secure your account immediately."},
+		"security.2fa_enabled":      {"Two-factor authentication enabled", "Two-factor authentication enabled", "Two-factor authentication is now enabled on your account."},
+		"security.2fa_disabled":     {"Two-factor authentication disabled", "Two-factor authentication disabled", "Two-factor authentication was disabled on your account. If this was not you, secure your account immediately."},
+		"security.api_key_created":  {"API key created", "A new API key was created", "A new API key was created for your account. If this was not you, revoke it immediately."},
+	}
+	template, ok := templates[eventType]
+	return template, ok
+}
+
 func NewSendGrid(cfg SendGridConfig) (*SendGrid, error) {
 	if strings.TrimSpace(cfg.APIKey) == "" || strings.TrimSpace(cfg.FromEmail) == "" {
 		return nil, ErrSendGridNotConfigured
@@ -56,6 +90,30 @@ func (s *SendGrid) SendEmailVerification(ctx context.Context, recipient, code st
 	plainText := fmt.Sprintf("Your Limiance verification code is %s. It expires in %d minutes. If you did not request this, you can ignore this email.", code, int(time.Until(expiresAt).Minutes()))
 	html := fmt.Sprintf("<p>Your Limiance verification code is:</p><p style=\"font-size:28px;font-weight:700;letter-spacing:4px\">%s</p><p>It expires in %d minutes.</p><p>If you did not request this, you can ignore this email.</p>", code, int(time.Until(expiresAt).Minutes()))
 	return s.send(ctx, recipient, subject, plainText, html)
+}
+
+func (s *SendGrid) SendPasswordReset(ctx context.Context, recipient, code string, expiresAt time.Time) error {
+	subject := "Your Limiance password reset code"
+	minutes := int(time.Until(expiresAt).Minutes())
+	plainText := fmt.Sprintf("Your Limiance password reset code is %s. It expires in %d minutes. If you did not request this, secure your account immediately.", code, minutes)
+	html := fmt.Sprintf("<p>Your Limiance password reset code is:</p><p style=\"font-size:28px;font-weight:700;letter-spacing:4px\">%s</p><p>It expires in %d minutes.</p><p>If you did not request this, secure your account immediately.</p>", code, minutes)
+	return s.send(ctx, recipient, subject, plainText, html)
+}
+
+// SendTransactionalEmail delivers a code-owned template. HTML-escape all copy
+// here as a defence-in-depth boundary before it reaches the email provider.
+func (s *SendGrid) SendTransactionalEmail(ctx context.Context, recipient string, message TransactionalEmail) error {
+	plainText := message.Title + "\n\n" + message.Body
+	htmlBody := fmt.Sprintf("<h2>%s</h2><p>%s</p>", escapeHTML(message.Title), escapeHTML(message.Body))
+	return s.send(ctx, recipient, message.Subject, plainText, htmlBody)
+}
+
+func escapeHTML(value string) string {
+	value = strings.ReplaceAll(value, "&", "&amp;")
+	value = strings.ReplaceAll(value, "<", "&lt;")
+	value = strings.ReplaceAll(value, ">", "&gt;")
+	value = strings.ReplaceAll(value, `"`, "&quot;")
+	return strings.ReplaceAll(value, "'", "&#39;")
 }
 
 // SendTestEmail validates the configured sender and delivery path without

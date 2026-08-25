@@ -7,6 +7,7 @@ import (
 
 	"github.com/limiance/backend/internal/config"
 	"github.com/limiance/backend/internal/eventrouter"
+	"github.com/limiance/backend/internal/notifications"
 	"github.com/limiance/backend/internal/platform/queue"
 )
 
@@ -17,7 +18,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	notifications, err := queue.NewSQS(ctx, queue.SQSConfig{Region: cfg.AWSRegion, QueueURL: cfg.SQSNotificationsQueueURL, Endpoint: cfg.SQSEndpoint})
+	notificationQueue, err := queue.NewSQS(ctx, queue.SQSConfig{Region: cfg.AWSRegion, QueueURL: cfg.SQSNotificationsQueueURL, Endpoint: cfg.SQSEndpoint})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -29,7 +30,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	router, err := eventrouter.New(source, map[string]queue.Publisher{"email.verification_requested": notifications, "custody.webhook_received": deposits}, unrouted)
+	routes := map[string]queue.Publisher{
+		"custody.webhook_received": deposits,
+	}
+	for _, eventType := range notifications.RoutedEventTypes {
+		routes[eventType] = notificationQueue
+	}
+	router, err := eventrouter.New(source, routes, unrouted)
 	if err != nil {
 		log.Fatal(err)
 	}
