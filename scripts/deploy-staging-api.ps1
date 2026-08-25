@@ -18,7 +18,7 @@ $ApiSecurityGroup = 'sg-0b6b43d8368e0db2a'
 $DatabaseInstance = 'limiance-staging'
 $ApplicationSecret = 'limiance/staging/app'
 $LogGroup = '/ecs/limiance-staging'
-$AllowedBrowserOrigins = 'https://staging.celvios.site'
+$AllowedBrowserOrigins = 'https://staging.celvios.site,https://admin.celvios.site'
 $Aws = 'C:\Program Files\Amazon\AWSCLIV2\aws.exe'
 
 if (-not (Test-Path -LiteralPath $Aws)) {
