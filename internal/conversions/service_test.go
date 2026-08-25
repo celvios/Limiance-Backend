@@ -15,3 +15,15 @@ func TestQuotedAmountsBuyBaseUsesAsk(t *testing.T) {
 		t.Fatalf("net=%d fee=%d err=%v", net, fee, err)
 	}
 }
+
+func TestBuildMarketSymbolUsesAssetPairFallback(t *testing.T) {
+	if got := buildMarketSymbol("BTC", "USDC"); got != "BTCUSDC" {
+		t.Fatalf("expected BTCUSDC, got %q", got)
+	}
+	if got := buildMarketSymbol("ETH", "USDC"); got != "ETHUSDC" {
+		t.Fatalf("expected ETHUSDC, got %q", got)
+	}
+	if got := buildMarketSymbol("USDC", "BTC"); got != "BTCUSDC" {
+		t.Fatalf("expected BTCUSDC, got %q", got)
+	}
+}

@@ -41,6 +41,21 @@ func NewService(data *datamanager.Manager, market marketdata.SpotProvider) *Serv
 	return &Service{data: data, market: market, ttl: 15 * time.Second}
 }
 
+func buildMarketSymbol(fromSymbol, toSymbol string) string {
+	fromSymbol = strings.ToUpper(strings.TrimSpace(fromSymbol))
+	toSymbol = strings.ToUpper(strings.TrimSpace(toSymbol))
+	if fromSymbol == "" || toSymbol == "" {
+		return ""
+	}
+	if fromSymbol == "USDC" || fromSymbol == "USDT" || fromSymbol == "USD" {
+		return toSymbol + fromSymbol
+	}
+	if toSymbol == "USDC" || toSymbol == "USDT" || toSymbol == "USD" {
+		return fromSymbol + toSymbol
+	}
+	return fromSymbol + toSymbol
+}
+
 func (s *Service) Quote(ctx context.Context, userID string, input QuoteInput) (datamanager.ConversionQuote, error) {
 	input.SourceAccountID = strings.TrimSpace(input.SourceAccountID)
 	input.FromAssetSymbol = strings.ToUpper(strings.TrimSpace(input.FromAssetSymbol))

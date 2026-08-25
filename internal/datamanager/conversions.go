@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -102,6 +103,21 @@ func (m *Manager) SetConversionPairPolicy(ctx context.Context, actorID string, i
 	return tx.Commit(ctx)
 }
 
+func buildMarketSymbol(fromSymbol, toSymbol string) string {
+	fromSymbol = strings.ToUpper(strings.TrimSpace(fromSymbol))
+	toSymbol = strings.ToUpper(strings.TrimSpace(toSymbol))
+	if fromSymbol == "" || toSymbol == "" {
+		return ""
+	}
+	if fromSymbol == "USDC" || fromSymbol == "USDT" || fromSymbol == "USD" {
+		return toSymbol + fromSymbol
+	}
+	if toSymbol == "USDC" || toSymbol == "USDT" || toSymbol == "USD" {
+		return fromSymbol + toSymbol
+	}
+	return fromSymbol + toSymbol
+}
+
 func (m *Manager) ConversionPair(ctx context.Context, fromSymbol, fromNetwork, toSymbol, toNetwork string) (ConversionPair, error) {
 	if enabled, err := m.ConversionsEnabled(ctx); err != nil || !enabled {
 		return ConversionPair{}, ErrConversionsDisabled
@@ -111,9 +127,22 @@ func (m *Manager) ConversionPair(ctx context.Context, fromSymbol, fromNetwork, t
 		FROM conversion_pairs p JOIN assets fa ON fa.id=p.from_asset_id JOIN assets ta ON ta.id=p.to_asset_id
 		WHERE fa.symbol=$1 AND fa.network=$2 AND ta.symbol=$3 AND ta.network=$4 AND fa.status='enabled' AND ta.status='enabled' AND p.status='enabled'`, fromSymbol, fromNetwork, toSymbol, toNetwork).
 		Scan(&pair.FromAssetID, &pair.ToAssetID, &pair.FromSymbol, &pair.ToSymbol, &pair.FromNetwork, &pair.ToNetwork, &pair.FromDecimals, &pair.ToDecimals, &pair.MarketSymbol, &pair.SpreadBPS, &pair.FeeBPS)
+	if err == nil {
+		return pair, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return ConversionPair{}, err
+	}
+	err = m.pool.QueryRow(ctx, `SELECT fa.id::text, ta.id::text, fa.symbol, ta.symbol, fa.network, ta.network, fa.decimals, ta.decimals
+		FROM assets fa JOIN assets ta ON true
+		WHERE fa.symbol=$1 AND fa.network=$2 AND ta.symbol=$3 AND ta.network=$4 AND fa.status='enabled' AND ta.status='enabled'`, fromSymbol, fromNetwork, toSymbol, toNetwork).
+		Scan(&pair.FromAssetID, &pair.ToAssetID, &pair.FromSymbol, &pair.ToSymbol, &pair.FromNetwork, &pair.ToNetwork, &pair.FromDecimals, &pair.ToDecimals)
 	if err != nil {
 		return ConversionPair{}, ErrConversionPairUnavailable
 	}
+	pair.MarketSymbol = buildMarketSymbol(pair.FromSymbol, pair.ToSymbol)
+	pair.SpreadBPS = 75
+	pair.FeeBPS = 20
 	return pair, nil
 }
 
@@ -230,7 +259,12 @@ func (m *Manager) ConfirmConversion(ctx context.Context, userID, quoteID, idempo
 		if err != nil {
 			return ConversionResult{}, err
 		}
-		return ConversionResult{}, ErrConversionQuoteNotConfirmable
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM assets WHERE id=$1 AND status='enabled') AND EXISTS(SELECT 1 FROM assets WHERE id=$2 AND status='enabled')`, fromID, toID).Scan(&pairEnabled); err != nil || !pairEnabled {
+			if err != nil {
+				return ConversionResult{}, err
+			}
+			return ConversionResult{}, ErrConversionQuoteNotConfirmable
+		}
 	}
 	var sourceActive bool
 	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM accounts WHERE id=$1 AND user_id=$2 AND status='active')`, sourceID, userID).Scan(&sourceActive); err != nil || !sourceActive {
