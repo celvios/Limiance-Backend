@@ -47,21 +47,22 @@ type TransactionalEmail struct {
 // can never become an email template.
 func TemplateForEvent(eventType string) (TransactionalEmail, bool) {
 	templates := map[string]TransactionalEmail{
-		"deposit.submitted":         {"Deposit detected", "Deposit detected", "We detected your deposit and will update you as confirmations arrive."},
-		"deposit.confirming":        {"Deposit confirming", "Your deposit is confirming", "Your deposit is awaiting the required blockchain confirmations."},
-		"deposit.credited":          {"Deposit credited", "Your deposit is available", "Your deposit has been credited to your Funding account."},
-		"deposit.failed":            {"Deposit update", "Your deposit could not be processed", "Your deposit was not credited. Contact support if you need assistance."},
-		"withdrawal.submitted":      {"Withdrawal submitted", "Withdrawal submitted", "Your withdrawal request has been received and is awaiting review."},
-		"withdrawal.under_review":   {"Withdrawal under review", "Withdrawal under review", "Your withdrawal requires additional review before it can be processed."},
-		"withdrawal.approved":       {"Withdrawal approved", "Withdrawal approved", "Your withdrawal has passed approval and will be submitted for processing."},
-		"withdrawal.completed":      {"Withdrawal completed", "Withdrawal completed", "Your withdrawal has been completed."},
-		"withdrawal.rejected":       {"Withdrawal rejected", "Withdrawal rejected", "Your withdrawal was rejected. Contact support if you need assistance."},
-		"transfer.completed":        {"Transfer completed", "Transfer completed", "Your transfer has been completed."},
-		"security.new_device_login": {"New sign-in", "New sign-in to your Limiance account", "A new device signed in to your Limiance account. If this was not you, secure your account immediately."},
-		"security.password_changed": {"Password changed", "Your password was changed", "Your Limiance password was changed. If this was not you, secure your account immediately."},
-		"security.2fa_enabled":      {"Two-factor authentication enabled", "Two-factor authentication enabled", "Two-factor authentication is now enabled on your account."},
-		"security.2fa_disabled":     {"Two-factor authentication disabled", "Two-factor authentication disabled", "Two-factor authentication was disabled on your account. If this was not you, secure your account immediately."},
-		"security.api_key_created":  {"API key created", "A new API key was created", "A new API key was created for your account. If this was not you, revoke it immediately."},
+		"deposit.submitted":                   {"Deposit detected", "Deposit detected", "We detected your deposit and will update you as confirmations arrive."},
+		"deposit.confirming":                  {"Deposit confirming", "Your deposit is confirming", "Your deposit is awaiting the required blockchain confirmations."},
+		"deposit.credited":                    {"Deposit credited", "Your deposit is available", "Your deposit has been credited to your Funding account."},
+		"deposit.failed":                      {"Deposit update", "Your deposit could not be processed", "Your deposit was not credited. Contact support if you need assistance."},
+		"withdrawal.submitted":                {"Withdrawal submitted", "Withdrawal submitted", "Your withdrawal request has been received and is awaiting review."},
+		"withdrawal.under_review":             {"Withdrawal under review", "Withdrawal under review", "Your withdrawal requires additional review before it can be processed."},
+		"withdrawal.approved":                 {"Withdrawal approved", "Withdrawal approved", "Your withdrawal has passed approval and will be submitted for processing."},
+		"withdrawal.completed":                {"Withdrawal completed", "Withdrawal completed", "Your withdrawal has been completed."},
+		"withdrawal.rejected":                 {"Withdrawal rejected", "Withdrawal rejected", "Your withdrawal was rejected. Contact support if you need assistance."},
+		"transfer.completed":                  {"Transfer completed", "Transfer completed", "Your transfer has been completed."},
+		"security.new_device_login":           {"New sign-in", "New sign-in to your Limiance account", "A new device signed in to your Limiance account. If this was not you, secure your account immediately."},
+		"security.password_changed":           {"Password changed", "Your password was changed", "Your Limiance password was changed. If this was not you, secure your account immediately."},
+		"security.2fa_enabled":                {"Two-factor authentication enabled", "Two-factor authentication enabled", "Two-factor authentication is now enabled on your account."},
+		"security.2fa_disabled":               {"Two-factor authentication disabled", "Two-factor authentication disabled", "Two-factor authentication was disabled on your account. If this was not you, secure your account immediately."},
+		"security.api_key_created":            {"API key created", "A new API key was created", "A new API key was created for your account. If this was not you, revoke it immediately."},
+		"security.anti_phishing_code_enabled": {"Your anti-phishing code", "Your anti-phishing code is ready", "Your anti-phishing code is shown below. Limiance support will never ask you to share it."},
 	}
 	template, ok := templates[eventType]
 	return template, ok

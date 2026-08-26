@@ -447,6 +447,67 @@ func (h *AuthHandler) SetAntiPhishingCode(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]string{"status": status})
 }
 
+func (h *AuthHandler) AntiPhishingStatus(w http.ResponseWriter, r *http.Request) {
+	p, ok := principalFromContext(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+		return
+	}
+	status, err := h.service.AntiPhishingStatus(r.Context(), p)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "security_settings_unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (h *AuthHandler) GeneratedAntiPhishingCode(w http.ResponseWriter, r *http.Request) {
+	p, ok := principalFromContext(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+		return
+	}
+	if r.Method == http.MethodDelete {
+		if !h.authorizeStepUp(w, r, p, "anti_phishing_code_disabled") {
+			return
+		}
+		if err := h.service.DisableAntiPhishingCode(r.Context(), p); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "security_settings_unavailable"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "disabled", "message": "Anti-phishing code disabled."})
+		return
+	}
+	if r.Method == http.MethodPost {
+		status, err := h.service.AntiPhishingStatus(r.Context(), p)
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "security_settings_unavailable"})
+			return
+		}
+		if status.Enabled && !h.authorizeStepUp(w, r, p, "anti_phishing_code_regenerated") {
+			return
+		}
+	}
+	if err := h.service.EnableAntiPhishingCode(r.Context(), p); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "security_settings_unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "enabled", "message": "Your anti-phishing code was generated and sent by email."})
+}
+
+func (h *AuthHandler) authorizeStepUp(w http.ResponseWriter, r *http.Request, p auth.Principal, purpose string) bool {
+	valid, err := h.service.ConsumeStepUp(r.Context(), p, purpose, r.Header.Get("X-Step-Up-Token"))
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "step_up_unavailable"})
+		return false
+	}
+	if !valid {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_step_up_token"})
+		return false
+	}
+	return true
+}
+
 func requestDeviceMetadata(r *http.Request) (string, string) {
 	userAgent := r.UserAgent()
 	host, _, err := net.SplitHostPort(r.RemoteAddr)

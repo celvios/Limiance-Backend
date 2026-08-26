@@ -8,6 +8,7 @@ import (
 
 	"github.com/limiance/backend/internal/datamanager"
 	"github.com/limiance/backend/internal/platform/queue"
+	"github.com/limiance/backend/internal/security/envelope"
 )
 
 var ErrNotificationStoreUnavailable = errors.New("notification store is unavailable")
@@ -56,6 +57,17 @@ func (c *Consumer) processNotification(ctx context.Context, event queue.Event) e
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		return err
 	}
+	if event.Type == "security.anti_phishing_code_enabled" {
+		ciphertext, ok := payload["code_ciphertext"].(string)
+		if !ok || ciphertext == "" {
+			return ErrNotificationStoreUnavailable
+		}
+		code, err := envelope.Open(c.encryptionKey, ciphertext)
+		if err != nil {
+			return err
+		}
+		copy.Body += "\n\nYour anti-phishing code: " + code + "\nNever share this code with anyone."
+	}
 	recipients, err := store.NotificationRecipients(ctx, event, payload)
 	if err != nil {
 		return err
@@ -88,7 +100,15 @@ func (c *Consumer) processNotification(ctx context.Context, event queue.Event) e
 				if err := deliveryStore.RecordNotificationDeliveryAttempt(ctx, item.ID, "email", recipient.Email); err != nil {
 					return err
 				}
-				if err := sender.SendTransactionalEmail(ctx, recipient.Email, copy); err != nil {
+				emailCopy := copy
+				if recipient.AntiPhishingCodeCiphertext != "" {
+					code, err := envelope.Open(c.encryptionKey, recipient.AntiPhishingCodeCiphertext)
+					if err != nil {
+						return err
+					}
+					emailCopy.Body += "\n\nYour anti-phishing code: " + code + "\nLimiance support will never ask you to share this code."
+				}
+				if err := sender.SendTransactionalEmail(ctx, recipient.Email, emailCopy); err != nil {
 					return err
 				}
 				if err := deliveryStore.MarkNotificationDeliveryComplete(ctx, item.ID, "email", recipient.Email); err != nil {

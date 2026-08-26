@@ -1,0 +1,1 @@
+ALTER TABLE users ADD COLUMN anti_phishing_code_ciphertext TEXT NOT NULL DEFAULT '';

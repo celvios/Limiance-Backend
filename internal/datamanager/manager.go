@@ -38,6 +38,10 @@ type UserProfile struct {
 	PreferredTheme        string `json:"preferred_theme"`
 }
 
+type AntiPhishingStatus struct {
+	Enabled bool `json:"enabled"`
+}
+
 type PasswordResetUser struct {
 	ID    string
 	Email string
@@ -449,6 +453,44 @@ func (m *Manager) SetAntiPhishingCode(ctx context.Context, userID, code string) 
 	return tx.Commit(ctx)
 }
 
+func (m *Manager) AntiPhishingStatus(ctx context.Context, userID string) (AntiPhishingStatus, error) {
+	var status AntiPhishingStatus
+	err := m.pool.QueryRow(ctx, `SELECT anti_phishing_code_ciphertext <> '' OR anti_phishing_code <> '' FROM users WHERE id=$1 AND status='active'`, userID).Scan(&status.Enabled)
+	return status, err
+}
+
+func (m *Manager) SetGeneratedAntiPhishingCode(ctx context.Context, userID, ciphertext string) error {
+	return m.WithinTransaction(ctx, func(tx *Transaction) error {
+		command, err := tx.audit.tx.Exec(ctx, `UPDATE users SET anti_phishing_code='',anti_phishing_code_ciphertext=$2,updated_at=now() WHERE id=$1 AND status='active'`, userID, ciphertext)
+		if err != nil || command.RowsAffected() != 1 {
+			if err != nil {
+				return err
+			}
+			return ErrUserNotFreezable
+		}
+		if err := tx.Audit().Record(ctx, userID, "security.anti_phishing_code_enabled", "user", userID, map[string]string{"delivery": "email"}); err != nil {
+			return err
+		}
+		return tx.Outbox().Enqueue(ctx, "security.anti_phishing_code_enabled", "user", userID, map[string]string{"user_id": userID, "code_ciphertext": ciphertext})
+	})
+}
+
+func (m *Manager) ClearAntiPhishingCode(ctx context.Context, userID string) error {
+	return m.WithinTransaction(ctx, func(tx *Transaction) error {
+		command, err := tx.audit.tx.Exec(ctx, `UPDATE users SET anti_phishing_code='',anti_phishing_code_ciphertext='',updated_at=now() WHERE id=$1 AND status='active'`, userID)
+		if err != nil || command.RowsAffected() != 1 {
+			if err != nil {
+				return err
+			}
+			return ErrUserNotFreezable
+		}
+		if err := tx.Audit().Record(ctx, userID, "security.anti_phishing_code_cleared", "user", userID, map[string]string{"delivery": "none"}); err != nil {
+			return err
+		}
+		return tx.Outbox().Enqueue(ctx, "security.anti_phishing_code_cleared", "user", userID, map[string]string{"user_id": userID})
+	})
+}
+
 func (m *Manager) KYCSessionUser(ctx context.Context, userID string) (KYCUser, error) {
 	var user KYCUser
 	err := m.pool.QueryRow(ctx, `SELECT u.id::text, u.email, u.status, COALESCE(k.applicant_id, ''), COALESCE(k.status::text, 'not_started') FROM users u LEFT JOIN kyc_profiles k ON k.user_id = u.id WHERE u.id = $1`, userID).Scan(&user.ID, &user.Email, &user.Status, &user.ApplicantID, &user.KYCStatus)
@@ -460,7 +502,7 @@ func (m *Manager) KYCSessionUser(ctx context.Context, userID string) (KYCUser, e
 // and review payload, which are internal compliance data.
 func (m *Manager) KYCStatus(ctx context.Context, userID string) (KYCProfile, error) {
 	var profile KYCProfile
-	err := m.pool.QueryRow(ctx, `SELECT COALESCE(k.provider, ''), COALESCE(k.status::text, 'not_started'), COALESCE(k.tier, 0), COALESCE(k.level_name, ''), COALESCE(k.updated_at, u.created_at) FROM users u LEFT JOIN kyc_profiles k ON k.user_id = u.id WHERE u.id = $1`, userID).Scan(&profile.Provider, &profile.Status, &profile.Tier, &profile.LevelName, &profile.UpdatedAt)
+	err := m.pool.QueryRow(ctx, `SELECT COALESCE(k.provider, ''), COALESCE(k.status::text, 'not_started'), COALESCE(k.tier, 0), COALESCE(k.level_name, ''), COALESCE(k.review_reject_type, ''), COALESCE(k.updated_at, u.created_at) FROM users u LEFT JOIN kyc_profiles k ON k.user_id = u.id WHERE u.id = $1`, userID).Scan(&profile.Provider, &profile.Status, &profile.Tier, &profile.LevelName, &profile.RejectReason, &profile.UpdatedAt)
 	return profile, err
 }
 
@@ -640,11 +682,12 @@ func (m *Manager) KYCUserByApplicant(ctx context.Context, applicantID string) (K
 }
 
 type KYCProfile struct {
-	Provider  string
-	Status    string
-	Tier      int16
-	LevelName string
-	UpdatedAt time.Time
+	Provider     string
+	Status       string
+	Tier         int16
+	LevelName    string
+	RejectReason string
+	UpdatedAt    time.Time
 }
 
 type KYCApplication struct {
@@ -878,8 +921,9 @@ type NotificationInput struct {
 }
 
 type NotificationRecipient struct {
-	UserID string
-	Email  string
+	UserID                     string
+	Email                      string
+	AntiPhishingCodeCiphertext string
 }
 
 // CreateNotification records a notification once for a business event. The
@@ -989,7 +1033,11 @@ func (m *Manager) NotificationRecipients(ctx context.Context, event queue.Event,
 	}
 	result := make([]NotificationRecipient, 0, len(recipients))
 	for _, item := range recipients {
-		result = append(result, NotificationRecipient{UserID: item.userID, Email: item.email})
+		var ciphertext string
+		if err := m.pool.QueryRow(ctx, `SELECT anti_phishing_code_ciphertext FROM users WHERE id=$1 AND status='active'`, item.userID).Scan(&ciphertext); err != nil {
+			return nil, err
+		}
+		result = append(result, NotificationRecipient{UserID: item.userID, Email: item.email, AntiPhishingCodeCiphertext: ciphertext})
 	}
 	return result, nil
 }

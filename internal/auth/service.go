@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base32"
 	"errors"
 	"net/mail"
 	"strings"
@@ -266,6 +268,35 @@ func (s *Service) SetAntiPhishingCode(ctx context.Context, principal Principal, 
 		}
 	}
 	return s.data.SetAntiPhishingCode(ctx, principal.UserID, code)
+}
+
+func (s *Service) AntiPhishingStatus(ctx context.Context, principal Principal) (datamanager.AntiPhishingStatus, error) {
+	return s.data.AntiPhishingStatus(ctx, principal.UserID)
+}
+
+func (s *Service) EnableAntiPhishingCode(ctx context.Context, principal Principal) error {
+	raw := make([]byte, 10)
+	if _, err := rand.Read(raw); err != nil {
+		return err
+	}
+	encoded := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw)
+	code := encoded[:4] + "-" + encoded[4:8] + "-" + encoded[8:12]
+	ciphertext, err := envelope.Seal(s.verificationKey, code)
+	if err != nil {
+		return err
+	}
+	return s.data.SetGeneratedAntiPhishingCode(ctx, principal.UserID, ciphertext)
+}
+
+func (s *Service) DisableAntiPhishingCode(ctx context.Context, principal Principal) error {
+	return s.data.ClearAntiPhishingCode(ctx, principal.UserID)
+}
+
+func (s *Service) ConsumeStepUp(ctx context.Context, principal Principal, purpose, token string) (bool, error) {
+	if principal.UserID == "" || principal.SessionID == "" || token == "" {
+		return false, nil
+	}
+	return s.data.ConsumeMFAStepUpChallenge(ctx, principal.UserID, principal.SessionID, purpose, session.Hash(token))
 }
 
 // RequestPasswordReset always returns nil for unknown/inactive accounts so an

@@ -8,6 +8,8 @@ import (
 	"runtime/debug"
 	"strings"
 	"time"
+
+	"github.com/limiance/backend/internal/auth"
 )
 
 var allowedCORSMethods = map[string]struct{}{
@@ -22,6 +24,7 @@ var allowedCORSHeaders = map[string]struct{}{
 	"content-type":    {},
 	"idempotency-key": {},
 	"x-request-id":    {},
+	"x-step-up-token": {},
 }
 
 func securityHeaders(next http.Handler) http.Handler {
@@ -73,11 +76,31 @@ func customerCORS(allowedOrigins []string, next http.Handler) http.Handler {
 			return
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, X-Request-ID")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, X-Request-ID, X-Step-Up-Token")
 		w.Header().Set("Access-Control-Max-Age", "600")
 		w.Header().Add("Vary", "Access-Control-Request-Method")
 		w.Header().Add("Vary", "Access-Control-Request-Headers")
 		w.WriteHeader(http.StatusNoContent)
+	})
+}
+
+func requireStepUp(service *auth.Service, purpose string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := principalFromContext(r)
+		if !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+			return
+		}
+		valid, err := service.ConsumeStepUp(r.Context(), principal, purpose, r.Header.Get("X-Step-Up-Token"))
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "step_up_unavailable"})
+			return
+		}
+		if !valid {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "step_up_required"})
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 

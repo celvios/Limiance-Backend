@@ -34,11 +34,12 @@ type Service struct{ data *datamanager.Manager }
 func NewService(data *datamanager.Manager) *Service { return &Service{data: data} }
 
 type Profile struct {
-	Provider  string `json:"provider"`
-	Status    Status `json:"status"`
-	Tier      int16  `json:"tier"`
-	LevelName string `json:"level_name"`
-	UpdatedAt string `json:"updated_at"`
+	Provider     string `json:"provider"`
+	Status       Status `json:"status"`
+	Tier         int16  `json:"tier"`
+	LevelName    string `json:"level_name"`
+	RejectReason string `json:"reject_reason,omitempty"`
+	UpdatedAt    string `json:"updated_at"`
 }
 
 func (s *Service) Status(ctx context.Context, userID string) (Profile, error) {
@@ -47,11 +48,12 @@ func (s *Service) Status(ctx context.Context, userID string) (Profile, error) {
 		return Profile{}, err
 	}
 	return Profile{
-		Provider:  stored.Provider,
-		Status:    Status(stored.Status),
-		Tier:      stored.Tier,
-		LevelName: stored.LevelName,
-		UpdatedAt: stored.UpdatedAt.UTC().Format(time.RFC3339),
+		Provider:     stored.Provider,
+		Status:       Status(stored.Status),
+		Tier:         stored.Tier,
+		LevelName:    stored.LevelName,
+		RejectReason: stored.RejectReason,
+		UpdatedAt:    stored.UpdatedAt.UTC().Format(time.RFC3339),
 	}, nil
 }
 

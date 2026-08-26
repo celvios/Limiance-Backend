@@ -22,6 +22,8 @@ var RoutedEventTypes = []string{
 	"security.2fa_enabled",
 	"security.2fa_disabled",
 	"security.api_key_created",
+	"security.anti_phishing_code_enabled",
+	"security.anti_phishing_code_cleared",
 }
 
 // IsRoutedEvent reports whether an outbox event belongs on the notifications
