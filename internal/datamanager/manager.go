@@ -42,6 +42,19 @@ type AntiPhishingStatus struct {
 	Enabled bool `json:"enabled"`
 }
 
+type UserPreferences struct {
+	EmailLogin      bool   `json:"email_login"`
+	EmailTrade      bool   `json:"email_trade"`
+	EmailPromo      bool   `json:"email_promo"`
+	PushPrice       bool   `json:"push_price"`
+	PushWithdraw    bool   `json:"push_withdraw"`
+	ConfirmOrder    bool   `json:"confirm_order"`
+	ClosePosition   bool   `json:"close_position"`
+	DefaultSlippage string `json:"default_slippage"`
+	HideBalance     bool   `json:"hide_balance"`
+	ShowOnline      bool   `json:"show_online"`
+}
+
 type PasswordResetUser struct {
 	ID    string
 	Email string
@@ -51,6 +64,29 @@ func (m *Manager) UserProfile(ctx context.Context, userID string) (UserProfile, 
 	var profile UserProfile
 	err := m.pool.QueryRow(ctx, `SELECT u.id::text,u.uid,u.email,u.display_name,COALESCE(k.status::text,'not_started'),COALESCE(k.tier,0),u.preferred_currency,u.secondary_display_asset,u.preferred_language,u.preferred_theme FROM users u LEFT JOIN kyc_profiles k ON k.user_id=u.id WHERE u.id=$1`, userID).Scan(&profile.UserID, &profile.UID, &profile.Email, &profile.DisplayName, &profile.KYCStatus, &profile.KYCTier, &profile.PreferredCurrency, &profile.SecondaryDisplayAsset, &profile.PreferredLanguage, &profile.PreferredTheme)
 	return profile, err
+}
+
+func (m *Manager) UserPreferences(ctx context.Context, userID string) (UserPreferences, error) {
+	preferences := UserPreferences{EmailLogin: true, EmailTrade: true, PushPrice: true, PushWithdraw: true, ConfirmOrder: true, ClosePosition: true, DefaultSlippage: "0.5", ShowOnline: true}
+	var raw []byte
+	if err := m.pool.QueryRow(ctx, `SELECT preferences FROM users WHERE id=$1 AND status='active'`, userID).Scan(&raw); err != nil {
+		return UserPreferences{}, err
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &preferences); err != nil {
+			return UserPreferences{}, err
+		}
+	}
+	return preferences, nil
+}
+
+func (m *Manager) UpdateUserPreferencesSettings(ctx context.Context, userID string, preferences map[string]any) error {
+	payload, err := json.Marshal(preferences)
+	if err != nil {
+		return err
+	}
+	_, err = m.pool.Exec(ctx, `UPDATE users SET preferences=$2::jsonb,updated_at=now() WHERE id=$1 AND status='active'`, userID, payload)
+	return err
 }
 
 func (m *Manager) UpdateUserPreferences(ctx context.Context, userID, displayName, currency, secondaryAsset, language, theme string) (UserProfile, error) {
