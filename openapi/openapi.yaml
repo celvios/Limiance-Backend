@@ -41,6 +41,18 @@ paths:
       security: [{ sessionCookie: [] }]
       responses:
         '200': { description: Session revoked }
+  /user/fees:
+    get:
+      summary: Return the authenticated user's current fee tier and rates
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - name: pair
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        '200': { description: Current VIP tier, rolling volume, and maker/taker rates }
+        '401': { description: No active session }
   /assets/catalog:
     get:
       summary: List approved assets and target networks

@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS user_fee_tier;
+DROP TABLE IF EXISTS user_volume_30d;
+DROP TABLE IF EXISTS vip_tiers;
+DROP TABLE IF EXISTS trades;
