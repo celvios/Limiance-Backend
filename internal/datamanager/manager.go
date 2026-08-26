@@ -36,6 +36,9 @@ type UserProfile struct {
 	SecondaryDisplayAsset string `json:"secondary_display_asset"`
 	PreferredLanguage     string `json:"preferred_language"`
 	PreferredTheme        string `json:"preferred_theme"`
+	PhoneE164             string `json:"phone_e164,omitempty"`
+	TOTPEnabled           bool   `json:"totp_enabled"`
+	LastLoginAt           string `json:"last_login_at,omitempty"`
 }
 
 type AntiPhishingStatus struct {
@@ -62,7 +65,11 @@ type PasswordResetUser struct {
 
 func (m *Manager) UserProfile(ctx context.Context, userID string) (UserProfile, error) {
 	var profile UserProfile
-	err := m.pool.QueryRow(ctx, `SELECT u.id::text,u.uid,u.email,u.display_name,COALESCE(k.status::text,'not_started'),COALESCE(k.tier,0),u.preferred_currency,u.secondary_display_asset,u.preferred_language,u.preferred_theme FROM users u LEFT JOIN kyc_profiles k ON k.user_id=u.id WHERE u.id=$1`, userID).Scan(&profile.UserID, &profile.UID, &profile.Email, &profile.DisplayName, &profile.KYCStatus, &profile.KYCTier, &profile.PreferredCurrency, &profile.SecondaryDisplayAsset, &profile.PreferredLanguage, &profile.PreferredTheme)
+	var lastLogin time.Time
+	err := m.pool.QueryRow(ctx, `SELECT u.id::text,u.uid,u.email,u.display_name,COALESCE(k.status::text,'not_started'),COALESCE(k.tier,0),u.preferred_currency,u.secondary_display_asset,u.preferred_language,u.preferred_theme,COALESCE(u.phone_e164,''),EXISTS (SELECT 1 FROM totp_credentials t WHERE t.user_id=u.id AND t.enabled_at IS NOT NULL AND t.disabled_at IS NULL),COALESCE((SELECT MAX(s.created_at) FROM sessions s WHERE s.user_id=u.id),u.created_at) FROM users u LEFT JOIN kyc_profiles k ON k.user_id=u.id WHERE u.id=$1`, userID).Scan(&profile.UserID, &profile.UID, &profile.Email, &profile.DisplayName, &profile.KYCStatus, &profile.KYCTier, &profile.PreferredCurrency, &profile.SecondaryDisplayAsset, &profile.PreferredLanguage, &profile.PreferredTheme, &profile.PhoneE164, &profile.TOTPEnabled, &lastLogin)
+	if err == nil {
+		profile.LastLoginAt = lastLogin.UTC().Format(time.RFC3339)
+	}
 	return profile, err
 }
 
