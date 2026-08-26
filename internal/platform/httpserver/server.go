@@ -14,6 +14,7 @@ import (
 	"github.com/limiance/backend/internal/custody"
 	"github.com/limiance/backend/internal/datamanager"
 	"github.com/limiance/backend/internal/deposits"
+	"github.com/limiance/backend/internal/fees"
 	"github.com/limiance/backend/internal/kyc"
 	"github.com/limiance/backend/internal/marketdata"
 	"github.com/limiance/backend/internal/notifications"
@@ -79,6 +80,8 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 		mux.Handle("GET /v1/accounts/transactions", requireSession(authService)(http.HandlerFunc(accountHandler.Transactions)))
 		mux.Handle("GET /v1/user/profile", requireSessionOrAPIKey(authService, data, cfg.VerificationEncryptionKey)(http.HandlerFunc(profileHandler.Get)))
 		mux.Handle("PUT /v1/user/preferences", requireSession(authService)(http.HandlerFunc(profileHandler.Preferences)))
+		feesHandler := NewFeesHandler(fees.NewService(data, nil))
+		mux.Handle("GET /v1/user/fees", requireSession(authService)(http.HandlerFunc(feesHandler.Get)))
 		var sumsubProvider kyc.SessionProvider
 		if provider, err := kyc.NewClient(kyc.ClientConfig{AppToken: cfg.SumsubAppToken, SecretKey: cfg.SumsubSecretKey, LevelName: cfg.SumsubLevelName}); err == nil {
 			sumsubProvider = provider
