@@ -679,6 +679,12 @@ func (m *Manager) KYCApplications(ctx context.Context, status string) ([]KYCAppl
 	return items, rows.Err()
 }
 
+func (m *Manager) KYCApplication(ctx context.Context, userID string) (KYCApplication, error) {
+	var item KYCApplication
+	err := m.pool.QueryRow(ctx, `SELECT u.id::text,u.uid,u.email,COALESCE(k.applicant_id,''),k.provider,k.status::text,k.tier,COALESCE(k.level_name,''),COALESCE(k.review_answer,''),COALESCE(k.review_reject_type,''),k.reviewed_at,k.updated_at FROM kyc_profiles k JOIN users u ON u.id=k.user_id WHERE u.id=$1`, userID).Scan(&item.UserID, &item.UID, &item.Email, &item.ApplicantID, &item.Provider, &item.Status, &item.Tier, &item.LevelName, &item.ReviewAnswer, &item.RejectType, &item.ReviewedAt, &item.UpdatedAt)
+	return item, err
+}
+
 func (m *Manager) ReviewKYC(ctx context.Context, reviewerID, userID, status, answer, reason string, tier int16) error {
 	return m.WithinTransaction(ctx, func(tx *Transaction) error {
 		command, err := tx.audit.tx.Exec(ctx, `UPDATE kyc_profiles SET status=$2::kyc_status,tier=$3,review_answer=$4,review_reject_type=$5,reviewed_at=now(),updated_at=now() WHERE user_id=$1 AND status IN ('pending','on_hold')`, userID, status, tier, answer, reason)

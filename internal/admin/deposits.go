@@ -123,6 +123,17 @@ func (s *Service) KYCApplications(ctx context.Context, actorID, status string) (
 	return s.data.KYCApplications(ctx, strings.ToLower(strings.TrimSpace(status)))
 }
 
+func (s *Service) KYCApplication(ctx context.Context, actorID, userID string) (datamanager.KYCApplication, error) {
+	allowed, err := s.data.HasRole(ctx, actorID, "compliance")
+	if err != nil {
+		return datamanager.KYCApplication{}, err
+	}
+	if !allowed {
+		return datamanager.KYCApplication{}, ErrNotPlatformAdministrator
+	}
+	return s.data.KYCApplication(ctx, strings.TrimSpace(userID))
+}
+
 func (s *Service) ReviewKYC(ctx context.Context, actorID, userID, status, reason string) error {
 	allowed, err := s.data.HasRole(ctx, actorID, "compliance")
 	if err != nil {

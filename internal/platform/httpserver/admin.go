@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/limiance/backend/internal/admin"
 	"github.com/limiance/backend/internal/datamanager"
 )
@@ -253,7 +254,11 @@ func (h *AdminHandler) KYCApplications(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
 		return
 	}
-	items, err := h.service.KYCApplications(r.Context(), p.UserID, r.URL.Query().Get("status"))
+	status := r.URL.Query().Get("status")
+	if status == "" && r.URL.Path == "/v1/admin/kyc/pending" {
+		status = "pending"
+	}
+	items, err := h.service.KYCApplications(r.Context(), p.UserID, status)
 	if errors.Is(err, admin.ErrNotPlatformAdministrator) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "compliance_role_required"})
 		return
@@ -264,6 +269,29 @@ func (h *AdminHandler) KYCApplications(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"applications": items})
+}
+
+func (h *AdminHandler) KYCApplication(w http.ResponseWriter, r *http.Request) {
+	p, ok := principalFromContext(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+		return
+	}
+	item, err := h.service.KYCApplication(r.Context(), p.UserID, r.PathValue("id"))
+	if errors.Is(err, admin.ErrNotPlatformAdministrator) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "compliance_role_required"})
+		return
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "kyc_application_not_found"})
+		return
+	}
+	if err != nil {
+		h.logger.Error("kyc application detail failed", "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "kyc_review_unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (h *AdminHandler) KYCReview(w http.ResponseWriter, r *http.Request) {
@@ -287,7 +315,11 @@ func (h *AdminHandler) KYCReview(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/approve") {
 		status = "approved"
 	}
-	err := h.service.ReviewKYC(r.Context(), p.UserID, r.PathValue("user_id"), status, input.Reason)
+	userID := r.PathValue("user_id")
+	if userID == "" {
+		userID = r.PathValue("id")
+	}
+	err := h.service.ReviewKYC(r.Context(), p.UserID, userID, status, input.Reason)
 	if errors.Is(err, admin.ErrNotPlatformAdministrator) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "compliance_role_required"})
 		return
