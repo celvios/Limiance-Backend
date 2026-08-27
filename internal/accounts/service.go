@@ -52,6 +52,8 @@ type Account struct {
 	Name string `json:"account_name"`
 }
 
+type Subaccount = datamanager.SubaccountSummary
+
 type TransactionHistoryItem = datamanager.TransactionHistoryItem
 type Service struct {
 	data               *datamanager.Manager
@@ -95,6 +97,30 @@ func (s *Service) Accounts(ctx context.Context, userID string) ([]Account, error
 		accounts = append(accounts, Account{ID: account.ID, Kind: account.Kind, Name: account.Name})
 	}
 	return accounts, nil
+}
+
+func (s *Service) CreateSubaccount(ctx context.Context, userID, name string) (Subaccount, error) {
+	name = strings.TrimSpace(name)
+	if len(name) < 3 || len(name) > 50 {
+		return Subaccount{}, ErrInvalidInput
+	}
+	return s.data.CreateSubaccount(ctx, userID, name)
+}
+
+func (s *Service) Subaccounts(ctx context.Context, userID string) ([]Subaccount, error) {
+	return s.data.UserSubaccounts(ctx, userID)
+}
+
+func (s *Service) SubaccountBalances(ctx context.Context, userID, accountID string) ([]Balance, error) {
+	stored, err := s.data.SubaccountBalances(ctx, userID, accountID)
+	if err != nil {
+		return nil, err
+	}
+	balances := make([]Balance, 0, len(stored))
+	for _, balance := range stored {
+		balances = append(balances, Balance{AccountID: balance.AccountID, AccountKind: balance.AccountKind, AccountName: balance.AccountName, AssetSymbol: balance.AssetSymbol, Network: balance.Network, AvailableAtomic: balance.AvailableAtomic, HeldAtomic: balance.HeldAtomic, PendingAtomic: balance.PendingAtomic, LockedAtomic: balance.LockedAtomic})
+	}
+	return balances, nil
 }
 
 func (s *Service) TransactionHistory(ctx context.Context, userID, accountKind string, limit int, cursor int64) ([]TransactionHistoryItem, error) {

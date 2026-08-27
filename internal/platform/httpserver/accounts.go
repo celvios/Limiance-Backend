@@ -16,6 +16,10 @@ type AccountHandler struct {
 	logger  *slog.Logger
 }
 
+type createSubaccountInput struct {
+	Name string `json:"name"`
+}
+
 func NewAccountHandler(service *accounts.Service, logger *slog.Logger) *AccountHandler {
 	return &AccountHandler{service: service, logger: logger}
 }
@@ -44,6 +48,63 @@ func (h *AccountHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"user_id": user.ID, "uid": user.UID, "status": user.Status, "funding_account_id": user.Funding, "uta_account_id": user.UTA})
+}
+
+func (h *AccountHandler) Subaccounts(w http.ResponseWriter, r *http.Request) {
+	principal, ok := principalFromContext(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+		return
+	}
+	if r.Method == http.MethodGet {
+		items, err := h.service.Subaccounts(r.Context(), principal.UserID)
+		if err != nil {
+			h.logger.Error("subaccounts read failed", "error", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "subaccounts_unavailable"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"subaccounts": items})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	defer r.Body.Close()
+	var input createSubaccountInput
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+		return
+	}
+	item, err := h.service.CreateSubaccount(r.Context(), principal.UserID, input.Name)
+	if err != nil {
+		if errors.Is(err, accounts.ErrInvalidInput) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_subaccount_name"})
+			return
+		}
+		if strings.Contains(err.Error(), "accounts_active_subaccount_name_idx") {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "subaccount_name_in_use"})
+			return
+		}
+		h.logger.Error("subaccount creation failed", "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "subaccount_creation_unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (h *AccountHandler) SubaccountBalances(w http.ResponseWriter, r *http.Request) {
+	principal, ok := principalFromContext(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+		return
+	}
+	items, err := h.service.SubaccountBalances(r.Context(), principal.UserID, r.PathValue("account_id"))
+	if err != nil {
+		h.logger.Error("subaccount balances read failed", "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "subaccount_balances_unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"balances": items})
 }
 
 func (h *AccountHandler) Balances(w http.ResponseWriter, r *http.Request) {

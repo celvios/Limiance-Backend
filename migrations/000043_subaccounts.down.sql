@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS accounts_active_subaccount_name_idx;

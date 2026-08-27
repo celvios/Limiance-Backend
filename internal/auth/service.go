@@ -61,12 +61,12 @@ func NewService(data *datamanager.Manager, sessionTTL time.Duration, totpKey, ve
 }
 
 func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, error) {
-	email := strings.ToLower(strings.TrimSpace(input.Email))
-	if _, err := mail.ParseAddress(email); err != nil || input.Password == "" {
+	identifier := strings.ToLower(strings.TrimSpace(input.Email))
+	if !validLoginIdentifier(identifier) || input.Password == "" {
 		return LoginResult{}, ErrInvalidCredentials
 	}
 
-	user, err := s.data.LoginUser(ctx, email)
+	user, err := s.data.LoginUser(ctx, identifier)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return LoginResult{}, ErrInvalidCredentials
 	}
@@ -94,6 +94,21 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, err
 		return LoginResult{MFAToken: raw}, ErrMFARequired
 	}
 	return s.createSession(ctx, user.ID, "password", sessionMetadata(input.UserAgent, input.ClientIP))
+}
+
+func validLoginIdentifier(identifier string) bool {
+	if _, err := mail.ParseAddress(identifier); err == nil {
+		return true
+	}
+	if len(identifier) < 9 || len(identifier) > 16 || identifier[0] != '+' {
+		return false
+	}
+	for _, digit := range identifier[1:] {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func sessionMetadata(userAgent, clientIP string) datamanager.SessionMetadata {
