@@ -160,7 +160,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $WorkerTaskDefinition = $TaskDefinition | ConvertTo-Json -Depth 20 | ConvertFrom-Json
 $WorkerTaskDefinition.family = $WorkerFamily
-$WorkerTaskDefinition.containerDefinitions[0].command = @('/app/withdrawals')
+$WorkerTaskDefinition.containerDefinitions[0] | Add-Member -MemberType NoteProperty -Name command -Value @('/app/withdrawals') -Force
 $WorkerTaskFile = New-TemporaryFile
 try {
     $WorkerTaskDefinition | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $WorkerTaskFile -NoNewline

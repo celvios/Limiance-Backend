@@ -250,6 +250,7 @@ func (c *FireblocksClient) signedJWT(_ string, path string, body []byte) (string
 }
 
 func parseRSAPrivateKey(value []byte) (*rsa.PrivateKey, error) {
+	value = []byte(strings.ReplaceAll(string(value), `\n`, "\n"))
 	block, _ := pem.Decode(value)
 	if block == nil {
 		return nil, errors.New("fireblocks private key is not PEM")
