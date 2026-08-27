@@ -39,6 +39,9 @@ foreach ($line in Get-Content -LiteralPath $EnvFile) {
     if ($value.Length -ge 2 -and (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'")))) {
         $value = $value.Substring(1, $value.Length - 2)
     }
+    if ($key -eq 'FIREBLOCKS_PRIVATE_KEY') {
+        $value = $value -replace '\\r?n', "`n"
+    }
     if ($allowedKeys -contains $key -and -not [string]::IsNullOrWhiteSpace($value)) {
         $local[$key] = $value
     }
