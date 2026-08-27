@@ -21,10 +21,14 @@ var allowedCORSMethods = map[string]struct{}{
 }
 
 var allowedCORSHeaders = map[string]struct{}{
-	"content-type":    {},
-	"idempotency-key": {},
-	"x-request-id":    {},
-	"x-step-up-token": {},
+	"content-type":             {},
+	"idempotency-key":          {},
+	"x-request-id":             {},
+	"x-step-up-token":          {},
+	"x-geetest-lot-number":     {},
+	"x-geetest-captcha-output": {},
+	"x-geetest-pass-token":     {},
+	"x-geetest-gen-time":       {},
 }
 
 func securityHeaders(next http.Handler) http.Handler {
@@ -76,7 +80,7 @@ func customerCORS(allowedOrigins []string, next http.Handler) http.Handler {
 			return
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, X-Request-ID, X-Step-Up-Token")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, X-Request-ID, X-Step-Up-Token, X-GeeTest-Lot-Number, X-GeeTest-Captcha-Output, X-GeeTest-Pass-Token, X-GeeTest-Gen-Time")
 		w.Header().Set("Access-Control-Max-Age", "600")
 		w.Header().Add("Vary", "Access-Control-Request-Method")
 		w.Header().Add("Vary", "Access-Control-Request-Headers")
