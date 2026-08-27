@@ -10,20 +10,83 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/limiance/backend/internal/platform/queue"
+	"github.com/limiance/backend/internal/security/password"
 )
 
 type Manager struct{ pool *pgxpool.Pool }
+
+type ExternalIdentityUser struct {
+	ID     string
+	Email  string
+	Status string
+}
 
 var ErrUserNotFreezable = errors.New("user is not eligible to be frozen")
 
 func New(pool *pgxpool.Pool) *Manager { return &Manager{pool: pool} }
 
 func (m *Manager) Ping(ctx context.Context) error { return m.pool.Ping(ctx) }
+
+func (m *Manager) ResolveExternalIdentity(ctx context.Context, provider, subject, email string) (ExternalIdentityUser, error) {
+	provider = strings.TrimSpace(provider)
+	subject = strings.TrimSpace(subject)
+	email = strings.ToLower(strings.TrimSpace(email))
+	if provider == "" || subject == "" {
+		return ExternalIdentityUser{}, errors.New("external identity is incomplete")
+	}
+	var user ExternalIdentityUser
+	err := m.WithinTransaction(ctx, func(tx *Transaction) error {
+		err := tx.accounts.tx.QueryRow(ctx, `SELECT u.id::text, COALESCE(u.email, ''), u.status FROM external_identities i JOIN users u ON u.id=i.user_id WHERE i.provider=$1 AND i.subject=$2`, provider, subject).Scan(&user.ID, &user.Email, &user.Status)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if email != "" {
+			err = tx.accounts.tx.QueryRow(ctx, `SELECT id::text, COALESCE(email, ''), status FROM users WHERE email=$1 FOR UPDATE`, email).Scan(&user.ID, &user.Email, &user.Status)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+		}
+		if user.ID == "" {
+			generatedPassword, err := password.Hash(subject + provider)
+			if err != nil {
+				return err
+			}
+			err = tx.accounts.tx.QueryRow(ctx, `INSERT INTO users (email, password_hash, country_code, status) VALUES (NULLIF($1, ''), $2, 'ZZ', 'active') RETURNING id::text, COALESCE(email, ''), status`, email, generatedPassword).Scan(&user.ID, &user.Email, &user.Status)
+			if err != nil {
+				return err
+			}
+			if _, _, err := tx.Accounts().CreateDefaultAccounts(ctx, user.ID); err != nil {
+				return err
+			}
+		}
+		_, err = tx.accounts.tx.Exec(ctx, `INSERT INTO external_identities (user_id, provider, subject, email) VALUES ($1, $2, $3, NULLIF($4, ''))`, user.ID, provider, subject, email)
+		return err
+	})
+	return user, err
+}
+
+func (m *Manager) CreateOAuthState(ctx context.Context, stateHash []byte, provider, redirectURL, codeVerifier string, expiresAt time.Time) error {
+	_, err := m.pool.Exec(ctx, `INSERT INTO oauth_states (state_hash, provider, redirect_url, code_verifier, expires_at) VALUES ($1, $2, $3, $4, $5)`, stateHash, provider, redirectURL, codeVerifier, expiresAt)
+	return err
+}
+
+func (m *Manager) ConsumeOAuthState(ctx context.Context, stateHash []byte, provider, redirectURL string) (string, error) {
+	var codeVerifier string
+	err := m.pool.QueryRow(ctx, `UPDATE oauth_states SET consumed_at=now() WHERE state_hash=$1 AND provider=$2 AND redirect_url=$3 AND consumed_at IS NULL AND expires_at > now() RETURNING code_verifier`, stateHash, provider, redirectURL).Scan(&codeVerifier)
+	if err != nil {
+		return "", err
+	}
+	return codeVerifier, nil
+}
 
 type UserProfile struct {
 	UserID                string `json:"user_id"`
@@ -116,7 +179,7 @@ func (m *Manager) UpdateUserPreferences(ctx context.Context, userID, displayName
 
 func (m *Manager) LoginUser(ctx context.Context, email string) (LoginUser, error) {
 	var user LoginUser
-	err := m.pool.QueryRow(ctx, `SELECT u.id::text, u.password_hash, u.status, EXISTS (SELECT 1 FROM totp_credentials t WHERE t.user_id = u.id AND t.enabled_at IS NOT NULL AND t.disabled_at IS NULL) FROM users u WHERE u.email = $1`, email).Scan(&user.ID, &user.PasswordHash, &user.Status, &user.TOTPEnabled)
+	err := m.pool.QueryRow(ctx, `SELECT u.id::text, u.password_hash, u.status, EXISTS (SELECT 1 FROM totp_credentials t WHERE t.user_id = u.id AND t.enabled_at IS NOT NULL AND t.disabled_at IS NULL) FROM users u WHERE u.email = $1 OR u.phone_e164 = $1`, email).Scan(&user.ID, &user.PasswordHash, &user.Status, &user.TOTPEnabled)
 	return user, err
 }
 
@@ -921,6 +984,13 @@ type AccountSummary struct {
 	Name string `json:"account_name"`
 }
 
+type SubaccountSummary struct {
+	ID        string    `json:"account_id"`
+	Name      string    `json:"account_name"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // TransactionHistoryItem is an immutable ledger posting visible to one of a
 // user's accounts. Amounts are atomic strings so clients never lose precision.
 // A posting, rather than a mutable "transaction" projection, is returned so
@@ -1218,6 +1288,53 @@ func (m *Manager) UserAccounts(ctx context.Context, userID string) ([]AccountSum
 		accounts = append(accounts, account)
 	}
 	return accounts, rows.Err()
+}
+
+func (m *Manager) CreateSubaccount(ctx context.Context, userID, name string) (SubaccountSummary, error) {
+	var account SubaccountSummary
+	err := m.WithinTransaction(ctx, func(tx *Transaction) error {
+		created, err := tx.Accounts().CreateSubaccount(ctx, userID, name)
+		if err != nil {
+			return err
+		}
+		account = created
+		return tx.Audit().Record(ctx, "user", "account.subaccount_created", "account", account.ID, map[string]string{"name": account.Name})
+	})
+	return account, err
+}
+
+func (m *Manager) UserSubaccounts(ctx context.Context, userID string) ([]SubaccountSummary, error) {
+	rows, err := m.pool.Query(ctx, `SELECT id::text, name, status, created_at FROM accounts WHERE user_id=$1 AND kind='subaccount' AND status='active' ORDER BY created_at, id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]SubaccountSummary, 0)
+	for rows.Next() {
+		var item SubaccountSummary
+		if err := rows.Scan(&item.ID, &item.Name, &item.Status, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (m *Manager) SubaccountBalances(ctx context.Context, userID, accountID string) ([]AccountBalance, error) {
+	rows, err := m.pool.Query(ctx, `SELECT a.id::text,a.kind::text,a.name,asset.symbol,asset.network, COALESCE(SUM(CASE WHEN p.bucket='available' AND p.direction='credit' THEN p.amount_atomic WHEN p.bucket='available' AND p.direction='debit' THEN -p.amount_atomic ELSE 0 END),0)::text, COALESCE(SUM(CASE WHEN p.bucket='held' AND p.direction='credit' THEN p.amount_atomic WHEN p.bucket='held' AND p.direction='debit' THEN -p.amount_atomic ELSE 0 END),0)::text, COALESCE(SUM(CASE WHEN p.bucket='pending' AND p.direction='credit' THEN p.amount_atomic WHEN p.bucket='pending' AND p.direction='debit' THEN -p.amount_atomic ELSE 0 END),0)::text, COALESCE(SUM(CASE WHEN p.bucket='locked' AND p.direction='credit' THEN p.amount_atomic WHEN p.bucket='locked' AND p.direction='debit' THEN -p.amount_atomic ELSE 0 END),0)::text FROM accounts a LEFT JOIN postings p ON p.account_id=a.id LEFT JOIN journals j ON j.id=p.journal_id AND j.status='posted' LEFT JOIN assets asset ON asset.id=p.asset_id WHERE a.user_id=$1 AND a.id=$2 AND a.kind='subaccount' AND a.status='active' GROUP BY a.id,a.kind,a.name,asset.symbol,asset.network ORDER BY asset.symbol,asset.network`, userID, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]AccountBalance, 0)
+	for rows.Next() {
+		var item AccountBalance
+		if err := rows.Scan(&item.AccountID, &item.AccountKind, &item.AccountName, &item.AssetSymbol, &item.Network, &item.AvailableAtomic, &item.HeldAtomic, &item.PendingAtomic, &item.LockedAtomic); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 // AccountTransactionHistory reads posted ledger entries only. cursor is the
@@ -2194,6 +2311,7 @@ type CatalogNetwork struct {
 type AccountsRepository interface {
 	CreateUser(context.Context, string, string, string) (User, error)
 	CreateDefaultAccounts(context.Context, string) (fundingID, utaID string, err error)
+	CreateSubaccount(context.Context, string, string) (SubaccountSummary, error)
 	SetVerifiedPhone(context.Context, string, string) error
 }
 type VerificationRepository interface {
@@ -2231,6 +2349,12 @@ func (r accountRepository) CreateDefaultAccounts(ctx context.Context, userID str
 		return "", "", err
 	}
 	return funding, uta, nil
+}
+
+func (r accountRepository) CreateSubaccount(ctx context.Context, userID, name string) (SubaccountSummary, error) {
+	var account SubaccountSummary
+	err := r.tx.QueryRow(ctx, `INSERT INTO accounts (user_id, kind, name) VALUES ($1, 'subaccount', $2) RETURNING id::text, name, status, created_at`, userID, name).Scan(&account.ID, &account.Name, &account.Status, &account.CreatedAt)
+	return account, err
 }
 
 func (r accountRepository) SetVerifiedPhone(ctx context.Context, userID, phone string) error {

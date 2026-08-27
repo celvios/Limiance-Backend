@@ -38,6 +38,14 @@ type Config struct {
 	TwilioAPIKey              string
 	TwilioAPISecret           string
 	TwilioVerifySID           string
+	GoogleClientID            string
+	GoogleClientSecret        string
+	GoogleRedirectURL         string
+	TelegramClientID          string
+	TelegramClientSecret      string
+	TelegramRedirectURL       string
+	GeeTestCaptchaID          string
+	GeeTestPrivateKey         string
 	VerificationPepper        string
 	VerificationEncryptionKey string
 	TravelRuleEncryptionKey   string
@@ -89,6 +97,14 @@ func Load() Config {
 		TwilioAPIKey:              strings.TrimSpace(os.Getenv("TWILIO_API_KEY")),
 		TwilioAPISecret:           strings.TrimSpace(os.Getenv("TWILIO_API_SECRET")),
 		TwilioVerifySID:           strings.TrimSpace(os.Getenv("TWILIO_VERIFY_SERVICE_SID")),
+		GoogleClientID:            strings.TrimSpace(os.Getenv("GOOGLE_CLIENT_ID")),
+		GoogleClientSecret:        strings.TrimSpace(os.Getenv("GOOGLE_CLIENT_SECRET")),
+		GoogleRedirectURL:         strings.TrimSpace(os.Getenv("GOOGLE_REDIRECT_URL")),
+		TelegramClientID:          strings.TrimSpace(os.Getenv("TELEGRAM_CLIENT_ID")),
+		TelegramClientSecret:      strings.TrimSpace(os.Getenv("TELEGRAM_CLIENT_SECRET")),
+		TelegramRedirectURL:       strings.TrimSpace(os.Getenv("TELEGRAM_REDIRECT_URL")),
+		GeeTestCaptchaID:          strings.TrimSpace(os.Getenv("GEETEST_CAPTCHA_ID")),
+		GeeTestPrivateKey:         strings.TrimSpace(os.Getenv("GEETEST_PRIVATE_KEY")),
 		VerificationPepper:        strings.TrimSpace(os.Getenv("VERIFICATION_CODE_PEPPER")),
 		VerificationEncryptionKey: strings.TrimSpace(os.Getenv("VERIFICATION_ENCRYPTION_KEY")),
 		TravelRuleEncryptionKey:   strings.TrimSpace(os.Getenv("TRAVEL_RULE_ENCRYPTION_KEY")),

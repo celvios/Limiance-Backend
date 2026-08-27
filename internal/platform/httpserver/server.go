@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/limiance/backend/internal/marketdata"
 	"github.com/limiance/backend/internal/notifications"
 	"github.com/limiance/backend/internal/phone"
+	"github.com/limiance/backend/internal/security/geetest"
 	"github.com/limiance/backend/internal/transfers"
 	"github.com/limiance/backend/internal/withdrawals"
 )
@@ -36,11 +38,36 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 		accountService := accounts.NewService(data, cfg.VerificationPepper, cfg.VerificationEncryptionKey)
 		accountHandler := NewAccountHandler(accountService, logger)
 		profileHandler := NewProfileHandler(data, accountService)
-		mux.HandleFunc("POST /v1/auth/register", accountHandler.Register)
+		captchaVerifier := geetest.New(cfg.GeeTestCaptchaID, cfg.GeeTestPrivateKey)
+		protectAuth := func(next http.Handler) http.Handler {
+			if captchaVerifier == nil {
+				return next
+			}
+			return captchaVerifier.Middleware(next)
+		}
+		mux.Handle("POST /v1/auth/register", protectAuth(http.HandlerFunc(accountHandler.Register)))
 		authService := auth.NewService(data, cfg.SessionTTL, cfg.TOTPEncryptionKey, cfg.VerificationPepper, cfg.VerificationEncryptionKey)
 		emailVerificationService := auth.NewEmailVerificationService(data, cfg.VerificationPepper, cfg.VerificationEncryptionKey)
 		authHandler := NewAuthHandler(authService, logger, cfg.Environment != "development").WithEmailVerification(emailVerificationService)
-		mux.HandleFunc("POST /v1/auth/login", authHandler.Login)
+		if cfg.GoogleClientID != "" && cfg.GoogleClientSecret != "" && cfg.GoogleRedirectURL != "" {
+			if provider, err := auth.NewOIDCProvider(context.Background(), auth.OIDCProviderConfig{Name: "google", Issuer: "https://accounts.google.com", ClientID: cfg.GoogleClientID, ClientSecret: cfg.GoogleClientSecret, RedirectURL: cfg.GoogleRedirectURL}); err == nil {
+				oauthHandler := NewOAuthHandler(authHandler, data, provider)
+				mux.Handle("GET /v1/auth/google/start", http.HandlerFunc(oauthHandler.Start))
+				mux.Handle("GET /v1/auth/google/callback", http.HandlerFunc(oauthHandler.Callback))
+			} else {
+				logger.Error("google oidc disabled", "error", err)
+			}
+		}
+		if cfg.TelegramClientID != "" && cfg.TelegramClientSecret != "" && cfg.TelegramRedirectURL != "" {
+			if provider, err := auth.NewOIDCProvider(context.Background(), auth.OIDCProviderConfig{Name: "telegram", Issuer: "https://oauth.telegram.org", ClientID: cfg.TelegramClientID, ClientSecret: cfg.TelegramClientSecret, RedirectURL: cfg.TelegramRedirectURL}); err == nil {
+				oauthHandler := NewOAuthHandler(authHandler, data, provider)
+				mux.Handle("GET /v1/auth/telegram/start", http.HandlerFunc(oauthHandler.Start))
+				mux.Handle("GET /v1/auth/telegram/callback", http.HandlerFunc(oauthHandler.Callback))
+			} else {
+				logger.Error("telegram oidc disabled", "error", err)
+			}
+		}
+		mux.Handle("POST /v1/auth/login", protectAuth(http.HandlerFunc(authHandler.Login)))
 		mux.HandleFunc("POST /v1/auth/totp/verify", authHandler.VerifyTOTPLogin)
 		mux.HandleFunc("POST /v1/auth/password-reset/request", authHandler.PasswordResetRequest)
 		mux.HandleFunc("POST /v1/auth/password-reset/confirm", authHandler.PasswordResetConfirm)
@@ -81,6 +108,9 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 		mux.Handle("GET /v1/accounts/balances", requireSession(authService)(http.HandlerFunc(accountHandler.Balances)))
 		mux.Handle("GET /v1/wallet/balances", requireSession(authService)(http.HandlerFunc(accountHandler.WalletBalances)))
 		mux.Handle("GET /v1/accounts/transactions", requireSession(authService)(http.HandlerFunc(accountHandler.Transactions)))
+		mux.Handle("GET /v1/accounts/subaccounts", requireSession(authService)(http.HandlerFunc(accountHandler.Subaccounts)))
+		mux.Handle("POST /v1/accounts/subaccounts", requireSession(authService)(http.HandlerFunc(accountHandler.Subaccounts)))
+		mux.Handle("GET /v1/accounts/subaccounts/{account_id}/balances", requireSession(authService)(http.HandlerFunc(accountHandler.SubaccountBalances)))
 		mux.Handle("GET /v1/user/profile", requireSessionOrAPIKey(authService, data, cfg.VerificationEncryptionKey)(http.HandlerFunc(profileHandler.Get)))
 		mux.Handle("PUT /v1/user/preferences", requireSession(authService)(http.HandlerFunc(profileHandler.Preferences)))
 		feesHandler := NewFeesHandler(fees.NewService(data, nil))
