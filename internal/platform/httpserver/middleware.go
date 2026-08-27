@@ -1,8 +1,11 @@
 package httpserver
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -10,6 +13,7 @@ import (
 	"time"
 
 	"github.com/limiance/backend/internal/auth"
+	"github.com/limiance/backend/internal/datamanager"
 )
 
 var allowedCORSMethods = map[string]struct{}{
@@ -96,6 +100,48 @@ func requireStepUp(service *auth.Service, purpose string, next http.Handler) htt
 			return
 		}
 		valid, err := service.ConsumeStepUp(r.Context(), principal, purpose, r.Header.Get("X-Step-Up-Token"))
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "step_up_unavailable"})
+			return
+		}
+		if !valid {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "step_up_required"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func requireWithdrawalStepUp(service *auth.Service, data *datamanager.Manager, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := principalFromContext(r)
+		if !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+			return
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		var input struct {
+			AssetSymbol string `json:"asset_symbol"`
+			Network     string `json:"network"`
+			Address     string `json:"address"`
+			Tag         string `json:"tag"`
+		}
+		_ = json.Unmarshal(body, &input)
+		trusted, err := data.IsWithdrawalAddressWhitelisted(r.Context(), principal.UserID, strings.ToUpper(strings.TrimSpace(input.AssetSymbol)), strings.ToLower(strings.TrimSpace(input.Network)), strings.TrimSpace(input.Address), strings.TrimSpace(input.Tag))
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "withdrawal_policy_unavailable"})
+			return
+		}
+		if trusted {
+			next.ServeHTTP(w, r)
+			return
+		}
+		valid, err := service.ConsumeStepUp(r.Context(), principal, "withdrawal_created", r.Header.Get("X-Step-Up-Token"))
 		if err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "step_up_unavailable"})
 			return

@@ -1430,22 +1430,23 @@ func (m *Manager) WithdrawalHistory(ctx context.Context, userID string, limit in
 }
 
 type WithdrawalAddress struct {
-	ID          string
-	AssetSymbol string
-	Network     string
-	Address     string
-	Tag         string
-	Label       string
-	Status      string
-	ActivatedAt *time.Time
-	CreatedAt   time.Time
+	ID          string     `json:"id"`
+	AssetSymbol string     `json:"asset_symbol"`
+	Network     string     `json:"network"`
+	Address     string     `json:"address"`
+	Tag         string     `json:"tag"`
+	Label       string     `json:"label"`
+	Status      string     `json:"status"`
+	Whitelisted bool       `json:"whitelisted"`
+	ActivatedAt *time.Time `json:"activated_at"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
 func (m *Manager) WithdrawalAddresses(ctx context.Context, userID string) ([]WithdrawalAddress, error) {
 	if _, err := m.pool.Exec(ctx, `UPDATE withdrawal_addresses SET status='active' WHERE user_id=$1 AND status='pending' AND activated_at <= now()`, userID); err != nil {
 		return nil, err
 	}
-	rows, err := m.pool.Query(ctx, `SELECT w.id::text,a.symbol,a.network,w.address,w.tag,w.label,w.status,w.activated_at,w.created_at FROM withdrawal_addresses w JOIN assets a ON a.id=w.asset_id WHERE w.user_id=$1 ORDER BY w.created_at DESC`, userID)
+	rows, err := m.pool.Query(ctx, `SELECT w.id::text,a.symbol,a.network,w.address,w.tag,w.label,w.status,w.whitelisted,w.activated_at,w.created_at FROM withdrawal_addresses w JOIN assets a ON a.id=w.asset_id WHERE w.user_id=$1 ORDER BY w.created_at DESC`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -1453,7 +1454,7 @@ func (m *Manager) WithdrawalAddresses(ctx context.Context, userID string) ([]Wit
 	items := make([]WithdrawalAddress, 0)
 	for rows.Next() {
 		var item WithdrawalAddress
-		if err := rows.Scan(&item.ID, &item.AssetSymbol, &item.Network, &item.Address, &item.Tag, &item.Label, &item.Status, &item.ActivatedAt, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.AssetSymbol, &item.Network, &item.Address, &item.Tag, &item.Label, &item.Status, &item.Whitelisted, &item.ActivatedAt, &item.CreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -1463,7 +1464,7 @@ func (m *Manager) WithdrawalAddresses(ctx context.Context, userID string) ([]Wit
 
 var ErrWithdrawalAddressUnavailable = errors.New("withdrawal address unavailable")
 
-func (m *Manager) AddWithdrawalAddress(ctx context.Context, userID, symbol, network, address, tag, label string, cooldown time.Duration) (WithdrawalAddress, error) {
+func (m *Manager) AddWithdrawalAddress(ctx context.Context, userID, symbol, network, address, tag, label string, whitelisted bool, cooldown time.Duration) (WithdrawalAddress, error) {
 	tx, err := m.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return WithdrawalAddress{}, err
@@ -1477,7 +1478,7 @@ func (m *Manager) AddWithdrawalAddress(ctx context.Context, userID, symbol, netw
 	}
 	var item WithdrawalAddress
 	activation := time.Now().UTC().Add(cooldown)
-	err = tx.QueryRow(ctx, `INSERT INTO withdrawal_addresses (user_id,asset_id,address,tag,label,status,activated_at) VALUES ($1,$2,$3,$4,$5,'pending',$6) ON CONFLICT (user_id,asset_id,address,tag) DO UPDATE SET label=EXCLUDED.label WHERE withdrawal_addresses.status='pending' RETURNING id::text,$7,$8,address,tag,label,status,activated_at,created_at`, userID, assetID, address, tag, label, activation, symbol, network).Scan(&item.ID, &item.AssetSymbol, &item.Network, &item.Address, &item.Tag, &item.Label, &item.Status, &item.ActivatedAt, &item.CreatedAt)
+	err = tx.QueryRow(ctx, `INSERT INTO withdrawal_addresses (user_id,asset_id,address,tag,label,status,whitelisted,activated_at) VALUES ($1,$2,$3,$4,$5,'pending',$6,$7) ON CONFLICT (user_id,asset_id,address,tag) DO UPDATE SET label=EXCLUDED.label,whitelisted=EXCLUDED.whitelisted WHERE withdrawal_addresses.status='pending' RETURNING id::text,$8,$9,address,tag,label,status,whitelisted,activated_at,created_at`, userID, assetID, address, tag, label, whitelisted, activation, symbol, network).Scan(&item.ID, &item.AssetSymbol, &item.Network, &item.Address, &item.Tag, &item.Label, &item.Status, &item.Whitelisted, &item.ActivatedAt, &item.CreatedAt)
 	if err != nil {
 		return WithdrawalAddress{}, err
 	}
@@ -1488,7 +1489,25 @@ func (m *Manager) AddWithdrawalAddress(ctx context.Context, userID, symbol, netw
 	if _, err = tx.Exec(ctx, `INSERT INTO audit_events (actor_id,actor_type,action,resource_type,resource_id,metadata) VALUES ($1,'user','withdrawal.address_added','withdrawal_address',$2,$3::jsonb)`, userID, item.ID, payload); err != nil {
 		return WithdrawalAddress{}, err
 	}
+	if whitelisted {
+		whitelistPayload, err := json.Marshal(map[string]any{"user_id": userID, "address_id": item.ID, "asset_symbol": symbol, "network": network, "label": label})
+		if err != nil {
+			return WithdrawalAddress{}, err
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO audit_events (actor_id,actor_type,action,resource_type,resource_id,metadata) VALUES ($1,'user','withdrawal.address_whitelisted','withdrawal_address',$2,$3::jsonb)`, userID, item.ID, whitelistPayload); err != nil {
+			return WithdrawalAddress{}, err
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO outbox_events (event_type,aggregate_type,aggregate_id,payload) VALUES ('security.withdrawal_address_whitelisted','user',$1,$2::jsonb)`, userID, whitelistPayload); err != nil {
+			return WithdrawalAddress{}, err
+		}
+	}
 	return item, tx.Commit(ctx)
+}
+
+func (m *Manager) IsWithdrawalAddressWhitelisted(ctx context.Context, userID, symbol, network, address, tag string) (bool, error) {
+	var whitelisted bool
+	err := m.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM withdrawal_addresses w JOIN assets a ON a.id=w.asset_id WHERE w.user_id=$1 AND a.symbol=$2 AND a.network=$3 AND w.address=$4 AND w.tag=$5 AND w.status='active' AND w.whitelisted=TRUE AND w.activated_at <= now())`, userID, symbol, network, address, tag).Scan(&whitelisted)
+	return whitelisted, err
 }
 
 func (m *Manager) DisableWithdrawalAddress(ctx context.Context, userID, addressID string) (bool, error) {

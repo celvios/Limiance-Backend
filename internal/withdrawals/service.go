@@ -30,6 +30,7 @@ type AddressInput struct {
 	Address     string `json:"address"`
 	Tag         string `json:"tag"`
 	Label       string `json:"label"`
+	Whitelisted bool   `json:"whitelisted"`
 }
 
 func (s *Service) ListAddresses(ctx context.Context, userID string) ([]datamanager.WithdrawalAddress, error) {
@@ -42,7 +43,7 @@ func (s *Service) AddAddress(ctx context.Context, userID string, input AddressIn
 	if userID == "" || input.AssetSymbol == "" || input.Network == "" || input.Address == "" || input.Label == "" || len(input.Label) > 100 || cooldown < 0 {
 		return datamanager.WithdrawalAddress{}, ErrInvalidInput
 	}
-	return s.data.AddWithdrawalAddress(ctx, userID, input.AssetSymbol, input.Network, input.Address, input.Tag, input.Label, cooldown)
+	return s.data.AddWithdrawalAddress(ctx, userID, input.AssetSymbol, input.Network, input.Address, input.Tag, input.Label, input.Whitelisted, cooldown)
 }
 
 func (s *Service) DisableAddress(ctx context.Context, userID, addressID string) (bool, error) {
