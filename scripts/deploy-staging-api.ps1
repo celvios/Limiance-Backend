@@ -11,6 +11,8 @@ $Region = 'eu-north-1'
 $Cluster = 'limiance-staging'
 $Family = 'limiance-staging-api'
 $Service = 'limiance-staging-api'
+$WorkerFamily = 'limiance-staging-withdrawals'
+$WorkerService = 'limiance-staging-withdrawals'
 $Image = "041659147758.dkr.ecr.eu-north-1.amazonaws.com/limiance-backend:$ImageTag"
 $ExecutionRole = 'limiance-staging-ecs-execution'
 $TaskRole = 'limiance-staging-ecs-task'
@@ -154,6 +156,30 @@ else {
 & $Aws ecs wait services-stable --region $Region --cluster $Cluster --services $Service
 if ($LASTEXITCODE -ne 0) {
     throw 'ECS service did not reach a stable state. Re-authenticate with aws login, then inspect the service events and CloudWatch logs.'
+}
+
+$WorkerTaskDefinition = $TaskDefinition | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+$WorkerTaskDefinition.family = $WorkerFamily
+$WorkerTaskDefinition.containerDefinitions[0].command = @('/app/withdrawals')
+$WorkerTaskFile = New-TemporaryFile
+try {
+    $WorkerTaskDefinition | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $WorkerTaskFile -NoNewline
+    $WorkerTaskDefinitionArn = & $Aws ecs register-task-definition --region $Region --cli-input-json "file://$WorkerTaskFile" --query 'taskDefinition.taskDefinitionArn' --output text
+    if ($LASTEXITCODE -ne 0) { throw 'Withdrawal worker task definition registration failed.' }
+}
+finally {
+    Remove-Item -LiteralPath $WorkerTaskFile -ErrorAction SilentlyContinue
+}
+$WorkerServiceStatus = & $Aws ecs describe-services --region $Region --cluster $Cluster --services $WorkerService --query 'services[0].status' --output text 2>$null
+if ($WorkerServiceStatus -eq 'ACTIVE') {
+    & $Aws ecs update-service --region $Region --cluster $Cluster --service $WorkerService --task-definition $WorkerTaskDefinitionArn --desired-count 1 --force-new-deployment | Out-Null
+}
+else {
+    & $Aws ecs create-service --region $Region --cluster $Cluster --service-name $WorkerService --task-definition $WorkerTaskDefinitionArn --desired-count 1 --launch-type FARGATE --network-configuration $NetworkConfig | Out-Null
+}
+& $Aws ecs wait services-stable --region $Region --cluster $Cluster --services $WorkerService
+if ($LASTEXITCODE -ne 0) {
+    throw 'Withdrawal worker service did not reach a stable state. Check the ECS service events and CloudWatch logs.'
 }
 if ($BootstrapTestAdministrator) {
     $BootstrapOverrides = 'containerOverrides=[{name=limiance-api,command=[/app/bootstrap-platform-admin,-email,toluking001@gmail.com,-confirm-staging]}]'

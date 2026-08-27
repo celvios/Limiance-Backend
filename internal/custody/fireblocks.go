@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/url"
 	"strings"
@@ -134,6 +135,50 @@ func (c *FireblocksClient) GetDepositAddress(ctx context.Context, walletID, asse
 		return DepositAddress{}, errors.New("fireblocks asset wallet is not ready for deposits")
 	}
 	return DepositAddress{ID: response.ID, Address: response.Address, Tag: response.Tag}, nil
+}
+
+func (c *FireblocksClient) CreateWithdrawal(ctx context.Context, input WithdrawalRequest) (Withdrawal, error) {
+	if input.SourceVaultID == "" || input.AssetID == "" || input.Destination == "" || input.Amount == "" || input.ExternalID == "" {
+		return Withdrawal{}, errors.New("fireblocks withdrawal fields are required")
+	}
+	body, err := json.Marshal(map[string]any{
+		"assetId":      input.AssetID,
+		"amount":       input.Amount,
+		"source":       map[string]string{"type": "VAULT_ACCOUNT", "id": input.SourceVaultID},
+		"destination":  map[string]any{"type": "ONE_TIME_ADDRESS", "oneTimeAddress": map[string]string{"address": input.Destination, "tag": input.DestinationTag}},
+		"externalTxId": input.ExternalID,
+	})
+	if err != nil {
+		return Withdrawal{}, err
+	}
+	var response struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/v1/transactions", body, DeterministicIdempotencyKey("withdrawal", input.ExternalID), &response); err != nil {
+		return Withdrawal{}, err
+	}
+	if response.ID == "" {
+		return Withdrawal{}, errors.New("fireblocks withdrawal response did not contain a transaction ID")
+	}
+	return Withdrawal{ProviderTransactionID: response.ID, Status: response.Status}, nil
+}
+
+func AtomicToProviderAmount(amount string, decimals int16) (string, error) {
+	if decimals < 0 || amount == "" {
+		return "", errors.New("invalid atomic amount")
+	}
+	value, ok := new(big.Int).SetString(amount, 10)
+	if !ok || value.Sign() <= 0 {
+		return "", errors.New("invalid atomic amount")
+	}
+	base := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
+	whole := new(big.Int).Quo(value, base)
+	fraction := new(big.Int).Mod(value, base)
+	if fraction.Sign() == 0 {
+		return whole.String(), nil
+	}
+	return whole.String() + "." + strings.TrimRight(fmt.Sprintf("%0*s", int(decimals), fraction.String()), "0"), nil
 }
 
 // ListSupportedAssets reads the provider's workspace-specific asset registry.

@@ -2121,6 +2121,23 @@ type WithdrawalResult struct {
 	Status       string
 }
 
+type WithdrawalForCustody struct {
+	ID                 string
+	UserID             string
+	SourceVaultID      string
+	CustodyAssetID     string
+	DestinationAddress string
+	DestinationTag     string
+	AmountAtomic       string
+	AssetDecimals      int16
+}
+
+type WithdrawalCustodyUpdate struct {
+	ProviderTransactionID string
+	Status                string
+	TransactionHash       string
+}
+
 type WithdrawalCancellationResult struct {
 	WithdrawalID string
 	JournalID    string
@@ -2216,6 +2233,135 @@ func (m *Manager) RequestWithdrawal(ctx context.Context, input WithdrawalInput) 
 		return WithdrawalResult{}, err
 	}
 	return result, tx.Commit(ctx)
+}
+
+func (m *Manager) ApprovedWithdrawals(ctx context.Context, provider string, limit int) ([]WithdrawalForCustody, error) {
+	if limit < 1 || limit > 100 {
+		limit = 25
+	}
+	rows, err := m.pool.Query(ctx, `SELECT w.id::text,w.user_id::text,c.external_vault_id,a.custody_asset_id,wa.address,wa.tag,w.amount_atomic::text,a.decimals
+		FROM withdrawals w
+		JOIN assets a ON a.id=w.asset_id
+		JOIN withdrawal_addresses wa ON wa.id=w.withdrawal_address_id
+		JOIN custody_wallets c ON c.user_id=w.user_id AND c.provider=$1 AND c.status='active'
+		WHERE w.status='approved' AND w.provider_transaction_id IS NULL AND a.status='enabled' AND a.custody_asset_id <> ''
+		ORDER BY w.created_at FOR UPDATE SKIP LOCKED LIMIT $2`, provider, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]WithdrawalForCustody, 0)
+	for rows.Next() {
+		var item WithdrawalForCustody
+		if err := rows.Scan(&item.ID, &item.UserID, &item.SourceVaultID, &item.CustodyAssetID, &item.DestinationAddress, &item.DestinationTag, &item.AmountAtomic, &item.AssetDecimals); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (m *Manager) MarkWithdrawalSubmitted(ctx context.Context, withdrawalID, providerTransactionID string) error {
+	tx, err := m.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var changed bool
+	err = tx.QueryRow(ctx, `UPDATE withdrawals SET status='submitted',provider_transaction_id=$2,custody_submitted_at=now(),custody_updated_at=now(),custody_error='',updated_at=now() WHERE id=$1 AND status='approved' AND provider_transaction_id IS NULL RETURNING true`, withdrawalID, providerTransactionID).Scan(&changed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return tx.Commit(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(map[string]string{"withdrawal_id": withdrawalID, "provider_transaction_id": providerTransactionID})
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(actor_type,action,resource_type,resource_id,metadata) VALUES('system','withdrawal.submitted','withdrawal',$1,$2::jsonb)`, withdrawalID, payload); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO outbox_events(event_type,aggregate_type,aggregate_id,payload) VALUES('withdrawal.submitted','withdrawal',$1,$2::jsonb)`, withdrawalID, payload); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (m *Manager) RecordWithdrawalCustodyUpdate(ctx context.Context, input WithdrawalCustodyUpdate) (bool, error) {
+	status := strings.ToUpper(strings.TrimSpace(input.Status))
+	nextStatus := "submitted"
+	switch status {
+	case "COMPLETED", "CONFIRMED":
+		nextStatus = "completed"
+	case "FAILED", "REJECTED", "CANCELLED":
+		nextStatus = "failed"
+	case "SUBMITTED", "QUEUED", "PENDING_AUTHORIZATION", "PENDING_SIGNATURE", "BROADCASTING":
+	default:
+		return false, nil
+	}
+	tx, err := m.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var withdrawalID, accountID, assetID, amount, currentStatus string
+	err = tx.QueryRow(ctx, `SELECT id::text,account_id::text,asset_id::text,amount_atomic::text,status FROM withdrawals WHERE provider_transaction_id=$1 FOR UPDATE`, input.ProviderTransactionID).Scan(&withdrawalID, &accountID, &assetID, &amount, &currentStatus)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, tx.Commit(ctx)
+	}
+	if err != nil {
+		return false, err
+	}
+	if currentStatus == "completed" || currentStatus == "failed" || currentStatus == "cancelled" {
+		return false, tx.Commit(ctx)
+	}
+	if nextStatus == "submitted" {
+		_, err = tx.Exec(ctx, `UPDATE withdrawals SET custody_updated_at=now(),transaction_hash=CASE WHEN $2 <> '' THEN $2 ELSE transaction_hash END,updated_at=now() WHERE id=$1`, withdrawalID, input.TransactionHash)
+		if err != nil {
+			return false, err
+		}
+		return true, tx.Commit(ctx)
+	}
+	if _, err = tx.Exec(ctx, `UPDATE withdrawals SET status=$2,custody_updated_at=now(),transaction_hash=CASE WHEN $3 <> '' THEN $3 ELSE transaction_hash END,updated_at=now() WHERE id=$1`, withdrawalID, nextStatus, input.TransactionHash); err != nil {
+		return false, err
+	}
+	var journalID string
+	if nextStatus == "completed" {
+		var systemAccountID string
+		systemName := "custody-clearing-" + assetID
+		if err = tx.QueryRow(ctx, `INSERT INTO accounts(user_id,kind,name) VALUES(NULL,'system',$1) ON CONFLICT (name) WHERE kind='system' DO UPDATE SET name=EXCLUDED.name RETURNING id::text`, systemName).Scan(&systemAccountID); err != nil {
+			return false, err
+		}
+		if err = tx.QueryRow(ctx, `INSERT INTO journals(idempotency_key,reference_type,reference_id,withdrawal_id) VALUES($1,'withdrawal_settlement',$2,$2::uuid) RETURNING id::text`, "withdrawal-settlement-"+withdrawalID, withdrawalID).Scan(&journalID); err != nil {
+			return false, err
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO postings(journal_id,account_id,asset_id,bucket,direction,amount_atomic) VALUES($1,$2,$3,'held','debit',$4),($1,$5,$3,'available','credit',$4)`, journalID, accountID, assetID, amount, systemAccountID)
+	} else {
+		if err = tx.QueryRow(ctx, `INSERT INTO journals(idempotency_key,reference_type,reference_id,withdrawal_id) VALUES($1,'withdrawal_release',$2,$2::uuid) RETURNING id::text`, "withdrawal-release-"+withdrawalID, withdrawalID).Scan(&journalID); err != nil {
+			return false, err
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO postings(journal_id,account_id,asset_id,bucket,direction,amount_atomic) VALUES($1,$2,$3,'held','debit',$4),($1,$2,$3,'available','credit',$4)`, journalID, accountID, assetID, amount)
+	}
+	if err != nil {
+		return false, err
+	}
+	payload, err := json.Marshal(map[string]string{"withdrawal_id": withdrawalID, "provider_transaction_id": input.ProviderTransactionID, "transaction_hash": input.TransactionHash})
+	if err != nil {
+		return false, err
+	}
+	eventType := "withdrawal.completed"
+	action := "withdrawal.completed"
+	if nextStatus == "failed" {
+		eventType, action = "withdrawal.rejected", "withdrawal.failed"
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(actor_type,action,resource_type,resource_id,metadata) VALUES('system',$1,'withdrawal',$2,$3::jsonb)`, action, withdrawalID, payload); err != nil {
+		return false, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO outbox_events(event_type,aggregate_type,aggregate_id,payload) VALUES($1,'withdrawal',$2,$3::jsonb)`, eventType, withdrawalID, payload); err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
 }
 
 // CancelWithdrawal releases a customer's held balance only while a withdrawal

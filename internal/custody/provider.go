@@ -8,6 +8,7 @@ type Provider interface {
 	ProviderID() string
 	CreateCustomerWallet(ctx context.Context, customerReference string) (Wallet, error)
 	GetDepositAddress(ctx context.Context, walletID, assetID, idempotencyKey string) (DepositAddress, error)
+	CreateWithdrawal(ctx context.Context, input WithdrawalRequest) (Withdrawal, error)
 }
 
 type Wallet struct {
@@ -18,4 +19,18 @@ type DepositAddress struct {
 	ID      string
 	Address string
 	Tag     string
+}
+
+type WithdrawalRequest struct {
+	SourceVaultID  string
+	AssetID        string
+	Destination    string
+	DestinationTag string
+	Amount         string
+	ExternalID     string
+}
+
+type Withdrawal struct {
+	ProviderTransactionID string
+	Status                string
 }

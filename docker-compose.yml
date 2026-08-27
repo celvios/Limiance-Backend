@@ -28,5 +28,24 @@ services:
       - "127.0.0.1:4566:4566"
     volumes:
       - ./scripts/localstack-init-sqs.sh:/etc/localstack/init/ready.d/init-sqs.sh:ro
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: [observability]
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+  grafana:
+    image: grafana/grafana:12.1.1
+    profiles: [observability]
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./observability/grafana-datasource.yml:/etc/grafana/provisioning/datasources/limiance.yml:ro
+      - ./observability/grafana-dashboard.yml:/etc/grafana/provisioning/dashboards/limiance.yml:ro
+      - ./observability/limiance-dashboard.json:/var/lib/grafana/dashboards/limiance.json:ro
 volumes:
   postgres-data:

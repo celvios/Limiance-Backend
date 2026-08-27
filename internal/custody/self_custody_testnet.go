@@ -69,6 +69,10 @@ func (c *SelfCustodyTestnetClient) GetDepositAddress(ctx context.Context, wallet
 	return DepositAddress{ID: response.ID, Address: response.Address, Tag: response.Tag}, nil
 }
 
+func (*SelfCustodyTestnetClient) CreateWithdrawal(context.Context, WithdrawalRequest) (Withdrawal, error) {
+	return Withdrawal{}, errors.New("self-custody testnet withdrawals are not enabled")
+}
+
 func (c *SelfCustodyTestnetClient) do(ctx context.Context, method, path string, input any, output any) error {
 	body, err := json.Marshal(input)
 	if err != nil {

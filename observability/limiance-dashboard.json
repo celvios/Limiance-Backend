@@ -1,0 +1,30 @@
+{
+  "title": "Limiance API",
+  "uid": "limiance-api",
+  "schemaVersion": 39,
+  "refresh": "15s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Requests per second",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [{"expr": "sum by (status) (rate(limiance_http_requests_total[5m]))", "legendFormat": "{{status}}"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "P95 and P99 latency",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(limiance_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p95"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(limiance_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p99"}
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "5xx error rate",
+      "gridPos": {"h": 5, "w": 8, "x": 0, "y": 8},
+      "targets": [{"expr": "sum(rate(limiance_http_requests_total{status=~\"5..\"}[5m])) / clamp_min(sum(rate(limiance_http_requests_total[5m])), 1)", "legendFormat": "error rate"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit"}}
+    }
+  ]
+}

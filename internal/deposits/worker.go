@@ -60,6 +60,11 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 					}
 				}
 			}
+			if parseErr == nil && event.ProviderTransactionID != "" {
+				if _, err := w.data.RecordWithdrawalCustodyUpdate(ctx, datamanager.WithdrawalCustodyUpdate{ProviderTransactionID: event.ProviderTransactionID, Status: event.Status, TransactionHash: event.TransactionHash}); err != nil {
+					return processed, err
+				}
+			}
 			if err := w.data.MarkWebhookProcessed(ctx, payload.ReceiptID); err != nil {
 				return processed, err
 			}

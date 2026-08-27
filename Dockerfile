@@ -3,8 +3,8 @@ WORKDIR /src
 COPY go.mod ./
 RUN go mod download
 COPY . .
-RUN for command in api migrate outbox event-router deposits notifications deposit-reconcile-sepolia bootstrap-platform-admin enable-staging-conversions fee-refresh; do \
-      CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o "/limiance/${command}" "./cmd/${command}"; \
+RUN for command in api migrate outbox event-router deposits withdrawals notifications deposit-reconcile-sepolia bootstrap-platform-admin enable-staging-conversions fee-refresh; do \
+        CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o "/limiance/${command}" "./cmd/${command}"; \
     done
 
 # A static Go binary needs only the system CA bundle for its HTTPS provider

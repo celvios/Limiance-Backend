@@ -19,6 +19,7 @@ import (
 	"github.com/limiance/backend/internal/kyc"
 	"github.com/limiance/backend/internal/marketdata"
 	"github.com/limiance/backend/internal/notifications"
+	"github.com/limiance/backend/internal/observability"
 	"github.com/limiance/backend/internal/phone"
 	"github.com/limiance/backend/internal/security/geetest"
 	"github.com/limiance/backend/internal/transfers"
@@ -27,6 +28,8 @@ import (
 
 func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http.Server {
 	mux := http.NewServeMux()
+	metrics := observability.NewMetrics()
+	mux.Handle("GET /metrics", metrics.Handler())
 	mux.HandleFunc("GET /healthz", health)
 	data := datamanager.New(pool)
 	mux.HandleFunc("GET /readyz", ready(data))
@@ -192,7 +195,7 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 		mux.HandleFunc("GET /v1/assets/catalog", assetHandler.Catalog)
 	}
 
-	handler := recoverer(logger)(requestID(logger)(securityHeaders(customerCORS(cfg.AllowedBrowserOrigins, csrfOriginCheck(cfg.AllowedBrowserOrigins, mux)))))
+	handler := recoverer(logger)(requestID(logger)(metrics.Middleware(securityHeaders(customerCORS(cfg.AllowedBrowserOrigins, csrfOriginCheck(cfg.AllowedBrowserOrigins, mux))))))
 	return &http.Server{
 		Addr:              cfg.HTTPAddress,
 		Handler:           handler,
