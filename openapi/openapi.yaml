@@ -22,6 +22,24 @@ paths:
         '200': { description: Secure HTTP-only session cookie issued }
         '401': { description: Invalid credentials }
         '403': { description: Email verification is required }
+  /auth/subaccount/login:
+    post:
+      summary: Log in to a custom subaccount
+      description: Issues an isolated subaccount session; owner-only routes are unavailable.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+      responses:
+        '200': { description: Isolated subaccount session cookie issued }
+        '401': { description: Invalid credentials }
+        '403': { description: Subaccount is unavailable }
   /auth/email/verify:
     post:
       summary: Verify a pending registration email code
@@ -162,6 +180,31 @@ paths:
       security: [{ sessionCookie: [] }]
       responses:
         '200': { description: Notifications marked read }
+  /accounts/balances:
+    get:
+      summary: Return balances for the active account
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: Account-scoped balances }
+  /accounts/transactions:
+    get:
+      summary: Return ledger transactions for the active subaccount or user
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: Account-scoped transaction history }
+  /admin/audit-events:
+    get:
+      summary: List redacted audit events
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100 } }
+        - { name: cursor, in: query, schema: { type: string, format: uuid } }
+        - { name: action, in: query, schema: { type: string } }
+        - { name: resource_type, in: query, schema: { type: string } }
+        - { name: resource_id, in: query, schema: { type: string } }
+      responses:
+        '200': { description: Audit events }
+        '403': { description: Auditor role required }
 components:
   parameters:
     IdempotencyKey:
@@ -178,6 +221,11 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+    apiKeyHmac:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Use X-API-Timestamp and X-API-Signature. Sign timestamp + HTTP method + URL escaped path + raw body with the decrypted secret.
   schemas:
     CatalogItem:
       type: object

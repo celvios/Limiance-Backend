@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/mail"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -50,6 +51,15 @@ type Account struct {
 	ID   string `json:"account_id"`
 	Kind string `json:"account_kind"`
 	Name string `json:"account_name"`
+}
+
+type SubaccountInput struct {
+	Nickname                string `json:"nickname"`
+	Type                    string `json:"type"`
+	AccountMode             string `json:"account_mode"`
+	Username                string `json:"username"`
+	Password                string `json:"password"`
+	RequirePasswordForLogin bool   `json:"require_password_for_login"`
 }
 
 type Subaccount = datamanager.SubaccountSummary
@@ -99,16 +109,45 @@ func (s *Service) Accounts(ctx context.Context, userID string) ([]Account, error
 	return accounts, nil
 }
 
-func (s *Service) CreateSubaccount(ctx context.Context, userID, name string) (Subaccount, error) {
-	name = strings.TrimSpace(name)
-	if len(name) < 3 || len(name) > 50 {
+func (s *Service) CreateSubaccount(ctx context.Context, userID string, input SubaccountInput) (Subaccount, error) {
+	input.Nickname = strings.TrimSpace(input.Nickname)
+	input.Type = strings.ToLower(strings.TrimSpace(input.Type))
+	input.AccountMode = strings.ToLower(strings.TrimSpace(input.AccountMode))
+	input.Username = strings.TrimSpace(input.Username)
+	if !regexp.MustCompile(`^[A-Za-z0-9]{5,20}$`).MatchString(input.Nickname) || (input.Type != "standard" && input.Type != "custom") || (input.AccountMode != "standard" && input.AccountMode != "uta") {
 		return Subaccount{}, ErrInvalidInput
 	}
-	return s.data.CreateSubaccount(ctx, userID, name)
+	if input.Type == "custom" && (len(input.Username) < 3 || len(input.Username) > 50 || len(input.Password) < 12) {
+		return Subaccount{}, ErrInvalidInput
+	}
+	if input.Type == "standard" {
+		input.Username, input.Password, input.RequirePasswordForLogin = "", "", false
+	}
+	passwordHash := ""
+	var err error
+	if input.Password != "" {
+		passwordHash, err = password.Hash(input.Password)
+		if err != nil {
+			return Subaccount{}, err
+		}
+	}
+	return s.data.CreateSubaccountWithOptions(ctx, datamanager.SubaccountInput{UserID: userID, Nickname: input.Nickname, Type: input.Type, AccountMode: input.AccountMode, Username: input.Username, PasswordHash: passwordHash, RequirePasswordForLogin: input.RequirePasswordForLogin})
 }
 
 func (s *Service) Subaccounts(ctx context.Context, userID string) ([]Subaccount, error) {
 	return s.data.UserSubaccounts(ctx, userID)
+}
+
+func (s *Service) Subaccount(ctx context.Context, userID, accountID string) (Subaccount, error) {
+	return s.data.Subaccount(ctx, userID, accountID)
+}
+
+func (s *Service) SetSubaccountStatus(ctx context.Context, userID, accountID, status string) (Subaccount, error) {
+	return s.data.SetSubaccountStatus(ctx, userID, accountID, status)
+}
+
+func (s *Service) SwitchAccount(ctx context.Context, userID, sessionID, accountID string) error {
+	return s.data.SetSessionAccount(ctx, userID, sessionID, strings.TrimSpace(accountID))
 }
 
 func (s *Service) SubaccountBalances(ctx context.Context, userID, accountID string) ([]Balance, error) {
@@ -125,6 +164,10 @@ func (s *Service) SubaccountBalances(ctx context.Context, userID, accountID stri
 
 func (s *Service) TransactionHistory(ctx context.Context, userID, accountKind string, limit int, cursor int64) ([]TransactionHistoryItem, error) {
 	return s.data.AccountTransactionHistory(ctx, userID, accountKind, limit, cursor)
+}
+
+func (s *Service) AccountTransactionHistory(ctx context.Context, userID, accountID string, limit int, cursor int64) ([]TransactionHistoryItem, error) {
+	return s.data.AccountTransactionHistoryForAccount(ctx, userID, accountID, limit, cursor)
 }
 
 func (s *Service) Register(ctx context.Context, input RegisterInput) (User, error) {

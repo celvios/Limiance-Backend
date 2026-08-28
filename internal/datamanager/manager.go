@@ -266,6 +266,8 @@ type APIKey struct {
 	ID          string     `json:"id"`
 	Name        string     `json:"name"`
 	Scope       string     `json:"scope"`
+	AccountID   string     `json:"account_id"`
+	AccountKind string     `json:"account_kind"`
 	IPWhitelist []string   `json:"ip_whitelist"`
 	LastUsedAt  *time.Time `json:"last_used_at,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
@@ -275,19 +277,22 @@ type APIKeyAuthentication struct {
 	UserID           string
 	UID              int64
 	Email            string
+	AccountID        string
+	AccountKind      string
+	Scope            string
 	SecretCiphertext string
 	IPWhitelist      []string
 }
 
 func (m *Manager) APIKeyAuthentication(ctx context.Context, keyHash []byte) (APIKeyAuthentication, error) {
 	var key APIKeyAuthentication
-	err := m.pool.QueryRow(ctx, `SELECT u.id::text,u.uid,u.email,k.secret_ciphertext,k.ip_whitelist FROM api_keys k JOIN users u ON u.id=k.user_id WHERE k.key_hash=$1 AND k.revoked_at IS NULL AND u.status='active'`, keyHash).Scan(&key.UserID, &key.UID, &key.Email, &key.SecretCiphertext, &key.IPWhitelist)
+	err := m.pool.QueryRow(ctx, `SELECT u.id::text,u.uid,u.email,k.account_id::text,a.kind::text,k.scope,k.secret_ciphertext,k.ip_whitelist FROM api_keys k JOIN users u ON u.id=k.user_id JOIN accounts a ON a.id=k.account_id WHERE k.key_hash=$1 AND k.revoked_at IS NULL AND u.status='active' AND a.status='active'`, keyHash).Scan(&key.UserID, &key.UID, &key.Email, &key.AccountID, &key.AccountKind, &key.Scope, &key.SecretCiphertext, &key.IPWhitelist)
 	return key, err
 }
 
 func (m *Manager) CreateAPIKey(ctx context.Context, userID, name, scope string, keyHash []byte, secretCiphertext string, ipWhitelist []string) (APIKey, error) {
 	var key APIKey
-	err := m.pool.QueryRow(ctx, `INSERT INTO api_keys (user_id,name,key_hash,secret_ciphertext,scope,ip_whitelist) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id::text,name,scope,ip_whitelist,last_used_at,created_at`, userID, name, keyHash, secretCiphertext, scope, ipWhitelist).Scan(&key.ID, &key.Name, &key.Scope, &key.IPWhitelist, &key.LastUsedAt, &key.CreatedAt)
+	err := m.pool.QueryRow(ctx, `INSERT INTO api_keys (user_id,account_id,name,key_hash,secret_ciphertext,scope,ip_whitelist) SELECT $1,a.id,$2,$3,$4,$5,$6 FROM accounts a WHERE a.user_id=$1 AND a.kind='funding' AND a.status='active' RETURNING id::text,name,scope,account_id::text,(SELECT account_row.kind::text FROM accounts account_row WHERE account_row.id=api_keys.account_id),ip_whitelist,last_used_at,created_at`, userID, name, keyHash, secretCiphertext, scope, ipWhitelist).Scan(&key.ID, &key.Name, &key.Scope, &key.AccountID, &key.AccountKind, &key.IPWhitelist, &key.LastUsedAt, &key.CreatedAt)
 	if err != nil {
 		return APIKey{}, err
 	}
@@ -298,7 +303,7 @@ func (m *Manager) CreateAPIKey(ctx context.Context, userID, name, scope string, 
 }
 
 func (m *Manager) APIKeys(ctx context.Context, userID string) ([]APIKey, error) {
-	rows, err := m.pool.Query(ctx, `SELECT id::text,name,scope,ip_whitelist,last_used_at,created_at FROM api_keys WHERE user_id=$1 AND revoked_at IS NULL ORDER BY created_at DESC`, userID)
+	rows, err := m.pool.Query(ctx, `SELECT k.id::text,k.name,k.scope,k.account_id::text,a.kind::text,k.ip_whitelist,k.last_used_at,k.created_at FROM api_keys k JOIN accounts a ON a.id=k.account_id WHERE k.user_id=$1 AND k.revoked_at IS NULL ORDER BY k.created_at DESC`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -306,12 +311,17 @@ func (m *Manager) APIKeys(ctx context.Context, userID string) ([]APIKey, error) 
 	keys := make([]APIKey, 0)
 	for rows.Next() {
 		var key APIKey
-		if err := rows.Scan(&key.ID, &key.Name, &key.Scope, &key.IPWhitelist, &key.LastUsedAt, &key.CreatedAt); err != nil {
+		if err := rows.Scan(&key.ID, &key.Name, &key.Scope, &key.AccountID, &key.AccountKind, &key.IPWhitelist, &key.LastUsedAt, &key.CreatedAt); err != nil {
 			return nil, err
 		}
 		keys = append(keys, key)
 	}
 	return keys, rows.Err()
+}
+
+func (m *Manager) MarkAPIKeyUsed(ctx context.Context, keyHash []byte) error {
+	_, err := m.pool.Exec(ctx, `UPDATE api_keys SET last_used_at=now() WHERE key_hash=$1 AND revoked_at IS NULL`, keyHash)
+	return err
 }
 
 func (m *Manager) RevokeAPIKey(ctx context.Context, userID, keyID string) (bool, error) {
@@ -496,8 +506,44 @@ func (m *Manager) EmailVerificationUser(ctx context.Context, email string) (Emai
 
 func (m *Manager) ActiveSession(ctx context.Context, tokenHash []byte) (SessionUser, error) {
 	var session SessionUser
-	err := m.pool.QueryRow(ctx, `SELECT s.id::text, u.id::text, u.uid, u.email, u.status FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()`, tokenHash).Scan(&session.SessionID, &session.UserID, &session.UID, &session.Email, &session.Status)
+	err := m.pool.QueryRow(ctx, `SELECT s.id::text, u.id::text, u.uid, u.email, u.status, COALESCE(s.account_id::text,c.account_id::text,''), COALESCE(a.kind::text,''), s.principal_type FROM sessions s JOIN users u ON u.id = s.user_id LEFT JOIN session_account_context c ON c.session_id=s.id LEFT JOIN accounts a ON a.id=COALESCE(s.account_id,c.account_id) WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()`, tokenHash).Scan(&session.SessionID, &session.UserID, &session.UID, &session.Email, &session.Status, &session.ActiveAccountID, &session.ActiveAccountKind, &session.PrincipalType)
 	return session, err
+}
+
+type SubaccountLoginUser struct {
+	UserID       string
+	AccountID    string
+	PasswordHash string
+	Status       string
+}
+
+func (m *Manager) SubaccountLoginUser(ctx context.Context, username string) (SubaccountLoginUser, error) {
+	var user SubaccountLoginUser
+	err := m.pool.QueryRow(ctx, `SELECT s.main_account_id::text,s.account_id::text,s.password_hash,s.status FROM subaccounts s WHERE lower(s.username)=lower($1) AND s.type='custom'`, username).Scan(&user.UserID, &user.AccountID, &user.PasswordHash, &user.Status)
+	return user, err
+}
+
+func (m *Manager) CreateSubaccountSession(ctx context.Context, userID, accountID string, tokenHash []byte, expiresAt time.Time, meta SessionMetadata) (string, error) {
+	var sessionID string
+	err := m.WithinTransaction(ctx, func(tx *Transaction) error {
+		if err := tx.audit.tx.QueryRow(ctx, `INSERT INTO sessions (user_id,account_id,principal_type,token_hash,expires_at,user_agent,client_ip) SELECT $1,$2,'subaccount',$3,$4,$5,NULLIF($6,'')::inet RETURNING id::text`, userID, accountID, tokenHash, expiresAt, meta.UserAgent, meta.ClientIP).Scan(&sessionID); err != nil {
+			return err
+		}
+		return tx.Audit().Record(ctx, "user", "subaccount.session_created", "account", accountID, map[string]string{"method": "subaccount_password"})
+	})
+	return sessionID, err
+}
+
+func (m *Manager) SetSessionAccount(ctx context.Context, userID, sessionID, accountID string) error {
+	var valid bool
+	if err := m.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM accounts WHERE id=$1 AND user_id=$2 AND kind IN ('funding','uta')) OR EXISTS (SELECT 1 FROM accounts a JOIN subaccounts s ON s.account_id=a.id WHERE a.id=$1 AND a.user_id=$2 AND a.kind='subaccount' AND a.status='active' AND s.status='active')`, accountID, userID).Scan(&valid); err != nil {
+		return err
+	}
+	if !valid {
+		return errors.New("account is not available to user")
+	}
+	_, err := m.pool.Exec(ctx, `INSERT INTO session_account_context (session_id,account_id) SELECT $1,$2 WHERE EXISTS (SELECT 1 FROM sessions WHERE id=$1 AND user_id=$3 AND revoked_at IS NULL) ON CONFLICT (session_id) DO UPDATE SET account_id=EXCLUDED.account_id,updated_at=now()`, sessionID, accountID, userID)
+	return err
 }
 
 // FreezeUser disables an account and revokes every active session in one
@@ -766,11 +812,14 @@ type EmailVerificationUser struct {
 }
 
 type SessionUser struct {
-	SessionID string
-	UserID    string
-	UID       int64
-	Email     string
-	Status    string
+	SessionID         string
+	UserID            string
+	UID               int64
+	Email             string
+	Status            string
+	ActiveAccountID   string
+	ActiveAccountKind string
+	PrincipalType     string
 }
 
 type KYCUser struct {
@@ -895,20 +944,30 @@ func (m *Manager) CreateInternalTransfer(ctx context.Context, input TransferInpu
 	if err != nil {
 		return TransferResult{}, err
 	}
-	var sourceOwner, sourceStatus, destinationStatus string
-	err = tx.QueryRow(ctx, `SELECT user_id::text, status FROM accounts WHERE id=$1`, input.SourceAccountID).Scan(&sourceOwner, &sourceStatus)
+	var sourceOwner, sourceStatus, sourceKind string
+	err = tx.QueryRow(ctx, `SELECT user_id::text, status, kind::text FROM accounts WHERE id=$1`, input.SourceAccountID).Scan(&sourceOwner, &sourceStatus, &sourceKind)
 	if err != nil {
 		return TransferResult{}, err
 	}
 	if sourceOwner != input.SenderUserID || sourceStatus != "active" {
 		return TransferResult{}, errors.New("source account is not available")
 	}
-	err = tx.QueryRow(ctx, `SELECT status FROM accounts WHERE id=$1`, input.DestinationAccountID).Scan(&destinationStatus)
+	var destinationOwner, destinationKind, destinationStatus string
+	err = tx.QueryRow(ctx, `SELECT user_id::text, kind::text, status FROM accounts WHERE id=$1`, input.DestinationAccountID).Scan(&destinationOwner, &destinationKind, &destinationStatus)
 	if err != nil {
 		return TransferResult{}, err
 	}
 	if destinationStatus != "active" {
 		return TransferResult{}, errors.New("destination account is not available")
+	}
+	if destinationKind == "subaccount" && destinationOwner != input.SenderUserID {
+		return TransferResult{}, errors.New("destination subaccount is not owned by sender")
+	}
+	if sourceKind == "subaccount" {
+		var subaccountStatus string
+		if err = tx.QueryRow(ctx, `SELECT status FROM subaccounts WHERE account_id=$1 AND main_account_id=$2`, input.SourceAccountID, input.SenderUserID).Scan(&subaccountStatus); err != nil || subaccountStatus != "active" {
+			return TransferResult{}, errors.New("source subaccount is not available")
+		}
 	}
 
 	// Serialise balance-changing commands for this account/asset pair. Postings
@@ -985,10 +1044,24 @@ type AccountSummary struct {
 }
 
 type SubaccountSummary struct {
-	ID        string    `json:"account_id"`
-	Name      string    `json:"account_name"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
+	ID          string    `json:"account_id"`
+	Name        string    `json:"account_name"`
+	Nickname    string    `json:"nickname,omitempty"`
+	Type        string    `json:"type,omitempty"`
+	AccountMode string    `json:"account_mode,omitempty"`
+	Username    string    `json:"username,omitempty"`
+	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type SubaccountInput struct {
+	UserID                  string
+	Nickname                string
+	Type                    string
+	AccountMode             string
+	Username                string
+	PasswordHash            string
+	RequirePasswordForLogin bool
 }
 
 // TransactionHistoryItem is an immutable ledger posting visible to one of a
@@ -1021,6 +1094,41 @@ type Notification struct {
 	Metadata    json.RawMessage `json:"metadata"`
 	ReadAt      *time.Time      `json:"read_at"`
 	CreatedAt   time.Time       `json:"created_at"`
+}
+
+type AuditEvent struct {
+	ID           string          `json:"id"`
+	ActorID      string          `json:"actor_id,omitempty"`
+	ActorType    string          `json:"actor_type"`
+	Action       string          `json:"action"`
+	ResourceType string          `json:"resource_type"`
+	ResourceID   string          `json:"resource_id"`
+	Reason       string          `json:"reason,omitempty"`
+	Metadata     json.RawMessage `json:"metadata"`
+	OccurredAt   time.Time       `json:"occurred_at"`
+}
+
+func (m *Manager) AuditEvents(ctx context.Context, limit int, cursor string, action, resourceType, resourceID string) ([]AuditEvent, error) {
+	rows, err := m.pool.Query(ctx, `
+		SELECT id::text,COALESCE(actor_id::text,''),actor_type,action,resource_type,resource_id,COALESCE(reason,''),
+			CASE WHEN metadata ? 'password' OR metadata ? 'password_hash' THEN '{}'::jsonb ELSE metadata END,occurred_at
+		FROM audit_events
+		WHERE ($1='' OR action=$1) AND ($2='' OR resource_type=$2) AND ($3='' OR resource_id=$3)
+			AND ($4='' OR occurred_at < (SELECT occurred_at FROM audit_events WHERE id=$4::uuid))
+		ORDER BY occurred_at DESC,id DESC LIMIT $5`, action, resourceType, resourceID, cursor, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	events := make([]AuditEvent, 0)
+	for rows.Next() {
+		var event AuditEvent
+		if err := rows.Scan(&event.ID, &event.ActorID, &event.ActorType, &event.Action, &event.ResourceType, &event.ResourceID, &event.Reason, &event.Metadata, &event.OccurredAt); err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
 }
 
 type NotificationInput struct {
@@ -1303,8 +1411,47 @@ func (m *Manager) CreateSubaccount(ctx context.Context, userID, name string) (Su
 	return account, err
 }
 
+func (m *Manager) CreateSubaccountWithOptions(ctx context.Context, input SubaccountInput) (SubaccountSummary, error) {
+	tx, err := m.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return SubaccountSummary{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var kycTier int16
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(tier,0) FROM users u LEFT JOIN kyc_profiles k ON k.user_id=u.id WHERE u.id=$1 AND u.status='active'`, input.UserID).Scan(&kycTier); err != nil {
+		return SubaccountSummary{}, err
+	}
+	if kycTier < 1 {
+		return SubaccountSummary{}, errors.New("subaccount creation requires level 1 kyc")
+	}
+	var limit, current int
+	if err = tx.QueryRow(ctx, `INSERT INTO subaccount_limits (main_account_id) VALUES ($1) ON CONFLICT (main_account_id) DO UPDATE SET main_account_id=EXCLUDED.main_account_id RETURNING max_standard_subaccounts,current_standard_count`, input.UserID).Scan(&limit, &current); err != nil {
+		return SubaccountSummary{}, err
+	}
+	if current >= limit {
+		return SubaccountSummary{}, errors.New("subaccount limit reached")
+	}
+	var accountID string
+	if err = tx.QueryRow(ctx, `INSERT INTO accounts (user_id,kind,name) VALUES ($1,'subaccount',$2) RETURNING id::text`, input.UserID, input.Nickname).Scan(&accountID); err != nil {
+		return SubaccountSummary{}, err
+	}
+	var item SubaccountSummary
+	err = tx.QueryRow(ctx, `INSERT INTO subaccounts (main_account_id,account_id,nickname,type,account_mode,username,password_hash,require_password_for_login) VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8) RETURNING account_id::text,nickname,type,account_mode,COALESCE(username,''),status,created_at`, input.UserID, accountID, input.Nickname, input.Type, input.AccountMode, input.Username, input.PasswordHash, input.RequirePasswordForLogin).Scan(&item.ID, &item.Nickname, &item.Type, &item.AccountMode, &item.Username, &item.Status, &item.CreatedAt)
+	item.Name = input.Nickname
+	if err != nil {
+		return SubaccountSummary{}, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO subaccount_permissions (subaccount_id) VALUES ($1)`, item.ID); err != nil {
+		return SubaccountSummary{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE subaccount_limits SET current_standard_count=current_standard_count+1,updated_at=now() WHERE main_account_id=$1`, input.UserID); err != nil {
+		return SubaccountSummary{}, err
+	}
+	return item, tx.Commit(ctx)
+}
+
 func (m *Manager) UserSubaccounts(ctx context.Context, userID string) ([]SubaccountSummary, error) {
-	rows, err := m.pool.Query(ctx, `SELECT id::text, name, status, created_at FROM accounts WHERE user_id=$1 AND kind='subaccount' AND status='active' ORDER BY created_at, id`, userID)
+	rows, err := m.pool.Query(ctx, `SELECT a.id::text,a.name,s.nickname,s.type,s.account_mode,COALESCE(s.username,''),a.status,a.created_at FROM accounts a JOIN subaccounts s ON s.account_id=a.id WHERE a.user_id=$1 AND a.kind='subaccount' AND a.status <> 'deleted' ORDER BY a.created_at, a.id`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -1312,12 +1459,41 @@ func (m *Manager) UserSubaccounts(ctx context.Context, userID string) ([]Subacco
 	items := make([]SubaccountSummary, 0)
 	for rows.Next() {
 		var item SubaccountSummary
-		if err := rows.Scan(&item.ID, &item.Name, &item.Status, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Name, &item.Nickname, &item.Type, &item.AccountMode, &item.Username, &item.Status, &item.CreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (m *Manager) Subaccount(ctx context.Context, userID, accountID string) (SubaccountSummary, error) {
+	var item SubaccountSummary
+	err := m.pool.QueryRow(ctx, `SELECT a.id::text,a.name,s.nickname,s.type,s.account_mode,COALESCE(s.username,''),s.status,a.created_at FROM accounts a JOIN subaccounts s ON s.account_id=a.id WHERE a.id=$1 AND a.user_id=$2 AND s.status <> 'deleted'`, accountID, userID).Scan(&item.ID, &item.Name, &item.Nickname, &item.Type, &item.AccountMode, &item.Username, &item.Status, &item.CreatedAt)
+	return item, err
+}
+
+func (m *Manager) SetSubaccountStatus(ctx context.Context, userID, accountID, status string) (SubaccountSummary, error) {
+	if status != "active" && status != "frozen" && status != "deleted" {
+		return SubaccountSummary{}, errors.New("invalid subaccount status")
+	}
+	tx, err := m.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return SubaccountSummary{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var item SubaccountSummary
+	err = tx.QueryRow(ctx, `UPDATE subaccounts s SET status=$3,deleted_at=CASE WHEN $3='deleted' THEN now() ELSE s.deleted_at END,updated_at=now() FROM accounts a WHERE s.account_id=a.id AND a.id=$1 AND a.user_id=$2 AND s.status <> 'deleted' RETURNING a.id::text,a.name,s.nickname,s.type,s.account_mode,COALESCE(s.username,''),s.status,a.created_at`, accountID, userID, status).Scan(&item.ID, &item.Name, &item.Nickname, &item.Type, &item.AccountMode, &item.Username, &item.Status, &item.CreatedAt)
+	if err != nil {
+		return SubaccountSummary{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE accounts SET status=$2 WHERE id=$1`, accountID, map[string]string{"active": "active", "frozen": "frozen", "deleted": "disabled"}[status]); err != nil {
+		return SubaccountSummary{}, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(actor_id,actor_type,action,resource_type,resource_id,metadata) VALUES($1,'user',$2,'subaccount',$3,'{}')`, userID, "subaccount."+status, accountID); err != nil {
+		return SubaccountSummary{}, err
+	}
+	return item, tx.Commit(ctx)
 }
 
 func (m *Manager) SubaccountBalances(ctx context.Context, userID, accountID string) ([]AccountBalance, error) {
@@ -1353,6 +1529,34 @@ func (m *Manager) AccountTransactionHistory(ctx context.Context, userID, account
 			AND ($3::bigint=0 OR p.id<$3)
 		ORDER BY p.id DESC
 		LIMIT $4`, userID, accountKind, cursor, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]TransactionHistoryItem, 0)
+	for rows.Next() {
+		var item TransactionHistoryItem
+		if err := rows.Scan(&item.PostingID, &item.JournalID, &item.ReferenceType, &item.ReferenceID, &item.AccountID, &item.AccountKind, &item.AccountName, &item.AssetSymbol, &item.Network, &item.Bucket, &item.Direction, &item.AmountAtomic, &item.OccurredAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (m *Manager) AccountTransactionHistoryForAccount(ctx context.Context, userID, accountID string, limit int, cursor int64) ([]TransactionHistoryItem, error) {
+	rows, err := m.pool.Query(ctx, `
+		SELECT p.id,j.id::text,j.reference_type,j.reference_id,a.id::text,
+			a.kind::text,a.name,asset.symbol,asset.network,p.bucket::text,
+			p.direction,p.amount_atomic::text,j.created_at
+		FROM postings p
+		JOIN journals j ON j.id=p.journal_id AND j.status='posted'
+		JOIN accounts a ON a.id=p.account_id
+		JOIN assets asset ON asset.id=p.asset_id
+		WHERE a.user_id=$1 AND a.id=$2 AND a.status='active'
+			AND ($3::bigint=0 OR p.id<$3)
+		ORDER BY p.id DESC
+		LIMIT $4`, userID, accountID, cursor, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1724,7 +1928,7 @@ func (m *Manager) DepositForReconciliation(ctx context.Context, transactionHash 
 
 func (m *Manager) DepositAssetDecimals(ctx context.Context, custodyAssetID, address, tag string) (int16, bool, error) {
 	var decimals int16
-	err := m.pool.QueryRow(ctx, `SELECT a.decimals FROM deposit_addresses d JOIN assets a ON a.id = d.asset_id WHERE d.status = 'active' AND d.address = $1 AND d.tag = $2 AND a.status = 'enabled' AND a.custody_asset_id = $3`, address, tag, custodyAssetID).Scan(&decimals)
+	err := m.pool.QueryRow(ctx, `SELECT a.decimals FROM deposit_addresses d JOIN assets a ON a.id = d.asset_id WHERE d.status = 'active' AND lower(d.address) = lower($1) AND d.tag = $2 AND a.status = 'enabled' AND a.custody_asset_id = $3`, address, tag, custodyAssetID).Scan(&decimals)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
 	}
@@ -1742,7 +1946,7 @@ func (m *Manager) ApplyDepositObservation(ctx context.Context, event DepositObse
 	defer func() { _ = tx.Rollback(ctx) }()
 	var userID, assetID, addressID, walletID string
 	var required int
-	err = tx.QueryRow(ctx, `SELECT d.user_id::text, a.id::text, d.id::text, d.custody_wallet_id::text, a.confirmations_required FROM deposit_addresses d JOIN assets a ON a.id = d.asset_id WHERE d.status = 'active' AND d.address = $1 AND d.tag = $2 AND a.status = 'enabled' AND a.custody_asset_id = $3`, event.DestinationAddress, event.DestinationTag, event.CustodyAssetID).Scan(&userID, &assetID, &addressID, &walletID, &required)
+	err = tx.QueryRow(ctx, `SELECT d.user_id::text, a.id::text, d.id::text, d.custody_wallet_id::text, a.confirmations_required FROM deposit_addresses d JOIN assets a ON a.id = d.asset_id WHERE d.status = 'active' AND lower(d.address) = lower($1) AND d.tag = $2 AND a.status = 'enabled' AND a.custody_asset_id = $3`, event.DestinationAddress, event.DestinationTag, event.CustodyAssetID).Scan(&userID, &assetID, &addressID, &walletID, &required)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, tx.Commit(ctx)
 	}
@@ -2186,6 +2390,10 @@ func (m *Manager) RequestWithdrawal(ctx context.Context, input WithdrawalInput) 
 	if !withdrawalsEnabled {
 		return WithdrawalResult{}, ErrWithdrawalsDisabled
 	}
+	var automaticWithdrawals bool
+	if err = tx.QueryRow(ctx, `SELECT enabled FROM operational_controls WHERE control_key='automatic_withdrawals' FOR SHARE`).Scan(&automaticWithdrawals); err != nil {
+		return WithdrawalResult{}, err
+	}
 	var result WithdrawalResult
 	err = tx.QueryRow(ctx, `SELECT id::text, (SELECT id::text FROM journals WHERE withdrawal_id = withdrawals.id), status FROM withdrawals WHERE idempotency_key=$1`, input.IdempotencyKey).Scan(&result.WithdrawalID, &result.JournalID, &result.Status)
 	if err == nil {
@@ -2218,7 +2426,11 @@ func (m *Manager) RequestWithdrawal(ctx context.Context, input WithdrawalInput) 
 		return WithdrawalResult{}, ErrWithdrawalKYCRequired
 	}
 	var owner, accountStatus string
-	if err = tx.QueryRow(ctx, `SELECT user_id::text,status FROM accounts WHERE id=$1 FOR UPDATE`, input.SourceAccountID).Scan(&owner, &accountStatus); err != nil || owner != input.UserID || accountStatus != "active" {
+	var accountKind string
+	if err = tx.QueryRow(ctx, `SELECT user_id::text,status,kind::text FROM accounts WHERE id=$1 FOR UPDATE`, input.SourceAccountID).Scan(&owner, &accountStatus, &accountKind); err != nil || owner != input.UserID || accountStatus != "active" {
+		return WithdrawalResult{}, ErrWithdrawalAccountUnavailable
+	}
+	if accountKind == "subaccount" {
 		return WithdrawalResult{}, ErrWithdrawalAccountUnavailable
 	}
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, input.SourceAccountID+":"+assetID); err != nil {
@@ -2231,11 +2443,15 @@ func (m *Manager) RequestWithdrawal(ctx context.Context, input WithdrawalInput) 
 	if available < input.AmountAtomic {
 		return WithdrawalResult{}, ErrInsufficientWithdrawalBalance
 	}
-	err = tx.QueryRow(ctx, `INSERT INTO withdrawals (user_id,account_id,asset_id,withdrawal_address_id,destination_address,destination_tag,amount_atomic,idempotency_key,status) VALUES ($1,$2,$3,NULLIF($4,'')::uuid,$5,$6,$7,$8,'pending_approval') RETURNING id::text,status`, input.UserID, input.SourceAccountID, assetID, addressID, input.Address, input.Tag, input.AmountAtomic, input.IdempotencyKey).Scan(&result.WithdrawalID, &result.Status)
+	withdrawalStatus := "pending_approval"
+	if automaticWithdrawals {
+		withdrawalStatus = "approved"
+	}
+	err = tx.QueryRow(ctx, `INSERT INTO withdrawals (user_id,account_id,asset_id,withdrawal_address_id,destination_address,destination_tag,amount_atomic,idempotency_key,status) VALUES ($1::uuid,$2::uuid,$3::uuid,NULLIF($4::text,'')::uuid,$5::text,$6::text,$7::numeric,$8::text,$9::text) RETURNING id::text,status`, input.UserID, input.SourceAccountID, assetID, addressID, input.Address, input.Tag, input.AmountAtomic, input.IdempotencyKey, withdrawalStatus).Scan(&result.WithdrawalID, &result.Status)
 	if err != nil {
 		return WithdrawalResult{}, err
 	}
-	err = tx.QueryRow(ctx, `INSERT INTO journals (idempotency_key,reference_type,reference_id,withdrawal_id) VALUES ($1,'withdrawal_hold',$2,$2::uuid) RETURNING id::text`, "withdrawal-hold-"+result.WithdrawalID, result.WithdrawalID).Scan(&result.JournalID)
+	err = tx.QueryRow(ctx, `INSERT INTO journals (idempotency_key,reference_type,reference_id,withdrawal_id) VALUES ($1,'withdrawal_hold',$2::text,$2::uuid) RETURNING id::text`, "withdrawal-hold-"+result.WithdrawalID, result.WithdrawalID).Scan(&result.JournalID)
 	if err != nil {
 		return WithdrawalResult{}, err
 	}
@@ -2252,8 +2468,17 @@ func (m *Manager) RequestWithdrawal(ctx context.Context, input WithdrawalInput) 
 	if _, err = tx.Exec(ctx, `INSERT INTO outbox_events (event_type,aggregate_type,aggregate_id,payload) VALUES ('withdrawal.submitted','withdrawal',$1,$2::jsonb)`, result.WithdrawalID, payload); err != nil {
 		return WithdrawalResult{}, err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO outbox_events (event_type,aggregate_type,aggregate_id,payload) VALUES ('withdrawal.under_review','withdrawal',$1,$2::jsonb)`, result.WithdrawalID, payload); err != nil {
-		return WithdrawalResult{}, err
+	if automaticWithdrawals {
+		if _, err = tx.Exec(ctx, `INSERT INTO audit_events (actor_id,actor_type,action,resource_type,resource_id,metadata) VALUES ($1,'user','withdrawal.auto_approved','withdrawal',$2,$3::jsonb)`, input.UserID, result.WithdrawalID, payload); err != nil {
+			return WithdrawalResult{}, err
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO outbox_events (event_type,aggregate_type,aggregate_id,payload) VALUES ('withdrawal.approved','withdrawal',$1,$2::jsonb)`, result.WithdrawalID, payload); err != nil {
+			return WithdrawalResult{}, err
+		}
+	} else {
+		if _, err = tx.Exec(ctx, `INSERT INTO outbox_events (event_type,aggregate_type,aggregate_id,payload) VALUES ('withdrawal.under_review','withdrawal',$1,$2::jsonb)`, result.WithdrawalID, payload); err != nil {
+			return WithdrawalResult{}, err
+		}
 	}
 	return result, tx.Commit(ctx)
 }

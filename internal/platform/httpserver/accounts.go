@@ -16,8 +16,33 @@ type AccountHandler struct {
 	logger  *slog.Logger
 }
 
+func (h *AccountHandler) SwitchAccount(w http.ResponseWriter, r *http.Request) {
+	principal, ok := principalFromContext(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+		return
+	}
+	var input struct {
+		AccountID string `json:"account_id"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<10)).Decode(&input); err != nil || strings.TrimSpace(input.AccountID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_account"})
+		return
+	}
+	if err := h.service.SwitchAccount(r.Context(), principal.UserID, principal.SessionID, input.AccountID); err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "account_not_available"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"active_account_id": input.AccountID})
+}
+
 type createSubaccountInput struct {
-	Name string `json:"name"`
+	Nickname                string `json:"nickname"`
+	Type                    string `json:"type"`
+	AccountMode             string `json:"account_mode"`
+	Username                string `json:"username"`
+	Password                string `json:"password"`
+	RequirePasswordForLogin bool   `json:"require_password_for_login"`
 }
 
 func NewAccountHandler(service *accounts.Service, logger *slog.Logger) *AccountHandler {
@@ -75,10 +100,13 @@ func (h *AccountHandler) Subaccounts(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
 		return
 	}
-	item, err := h.service.CreateSubaccount(r.Context(), principal.UserID, input.Name)
+	item, err := h.service.CreateSubaccount(r.Context(), principal.UserID, accounts.SubaccountInput{
+		Nickname: input.Nickname, Type: input.Type, AccountMode: input.AccountMode,
+		Username: input.Username, Password: input.Password, RequirePasswordForLogin: input.RequirePasswordForLogin,
+	})
 	if err != nil {
 		if errors.Is(err, accounts.ErrInvalidInput) {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_subaccount_name"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_subaccount"})
 			return
 		}
 		if strings.Contains(err.Error(), "accounts_active_subaccount_name_idx") {
@@ -107,13 +135,62 @@ func (h *AccountHandler) SubaccountBalances(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]any{"balances": items})
 }
 
+func (h *AccountHandler) SubaccountDetails(w http.ResponseWriter, r *http.Request) {
+	principal, ok := principalFromContext(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+		return
+	}
+	item, err := h.service.Subaccount(r.Context(), principal.UserID, r.PathValue("account_id"))
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "subaccount_not_found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (h *AccountHandler) SubaccountLifecycle(w http.ResponseWriter, r *http.Request) {
+	principal, ok := principalFromContext(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+		return
+	}
+	status := ""
+	switch r.Method {
+	case http.MethodDelete:
+		status = "deleted"
+	case http.MethodPost:
+		if r.PathValue("action") == "freeze" {
+			status = "frozen"
+		} else if r.PathValue("action") == "unfreeze" {
+			status = "active"
+		}
+	}
+	if status == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_subaccount_action"})
+		return
+	}
+	item, err := h.service.SetSubaccountStatus(r.Context(), principal.UserID, r.PathValue("account_id"), status)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "subaccount_not_found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
 func (h *AccountHandler) Balances(w http.ResponseWriter, r *http.Request) {
 	principal, ok := principalFromContext(r)
 	if !ok {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
 		return
 	}
-	balances, err := h.service.Balances(r.Context(), principal.UserID)
+	var balances []accounts.Balance
+	var err error
+	if principal.PrincipalType == "subaccount" {
+		balances, err = h.service.SubaccountBalances(r.Context(), principal.UserID, principal.ActiveAccountID)
+	} else {
+		balances, err = h.service.Balances(r.Context(), principal.UserID)
+	}
 	if err != nil {
 		h.logger.Error("account balances read failed", "error", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "balances_unavailable"})
@@ -129,6 +206,15 @@ func (h *AccountHandler) WalletBalances(w http.ResponseWriter, r *http.Request) 
 	principal, ok := principalFromContext(r)
 	if !ok {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+		return
+	}
+	if principal.PrincipalType == "subaccount" {
+		balances, err := h.service.SubaccountBalances(r.Context(), principal.UserID, principal.ActiveAccountID)
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "balances_unavailable"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"funding": []accounts.Balance{}, "uta": []accounts.Balance{}, "subaccounts": balances, "accounts": []any{}})
 		return
 	}
 	balances, err := h.service.Balances(r.Context(), principal.UserID)
@@ -193,7 +279,13 @@ func (h *AccountHandler) Transactions(w http.ResponseWriter, r *http.Request) {
 		}
 		cursor = parsed
 	}
-	items, err := h.service.TransactionHistory(r.Context(), principal.UserID, accountKind, limit, cursor)
+	var items []accounts.TransactionHistoryItem
+	var err error
+	if principal.PrincipalType == "subaccount" {
+		items, err = h.service.AccountTransactionHistory(r.Context(), principal.UserID, principal.ActiveAccountID, limit, cursor)
+	} else {
+		items, err = h.service.TransactionHistory(r.Context(), principal.UserID, accountKind, limit, cursor)
+	}
 	if err != nil {
 		h.logger.Error("account transaction history read failed", "error", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "transaction_history_unavailable"})

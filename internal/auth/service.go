@@ -41,11 +41,22 @@ type LoginResult struct {
 	MFAToken  string
 }
 
+type SubaccountLoginInput struct {
+	Username  string `json:"username"`
+	Password  string `json:"password"`
+	UserAgent string `json:"-"`
+	ClientIP  string `json:"-"`
+}
+
 type Principal struct {
-	SessionID string
-	UserID    string
-	UID       int64
-	Email     string
+	SessionID         string
+	UserID            string
+	UID               int64
+	Email             string
+	ActiveAccountID   string
+	ActiveAccountKind string
+	APIKeyScope       string
+	PrincipalType     string
 }
 
 type Service struct {
@@ -94,6 +105,36 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, err
 		return LoginResult{MFAToken: raw}, ErrMFARequired
 	}
 	return s.createSession(ctx, user.ID, "password", sessionMetadata(input.UserAgent, input.ClientIP))
+}
+
+func (s *Service) SubaccountLogin(ctx context.Context, input SubaccountLoginInput) (LoginResult, error) {
+	username := strings.TrimSpace(input.Username)
+	if username == "" || input.Password == "" {
+		return LoginResult{}, ErrInvalidCredentials
+	}
+	user, err := s.data.SubaccountLoginUser(ctx, username)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return LoginResult{}, ErrInvalidCredentials
+	}
+	if err != nil {
+		return LoginResult{}, err
+	}
+	if user.Status != "active" {
+		return LoginResult{}, ErrAccountFrozen
+	}
+	valid, err := password.Verify(user.PasswordHash, input.Password)
+	if err != nil || !valid {
+		return LoginResult{}, ErrInvalidCredentials
+	}
+	raw, hash, err := session.New()
+	if err != nil {
+		return LoginResult{}, err
+	}
+	expiresAt := time.Now().UTC().Add(s.sessionTTL)
+	if _, err := s.data.CreateSubaccountSession(ctx, user.UserID, user.AccountID, hash, expiresAt, datamanager.SessionMetadata{UserAgent: input.UserAgent, ClientIP: input.ClientIP}); err != nil {
+		return LoginResult{}, err
+	}
+	return LoginResult{Token: raw, ExpiresAt: expiresAt}, nil
 }
 
 func validLoginIdentifier(identifier string) bool {
@@ -233,7 +274,11 @@ func (s *Service) Authenticate(ctx context.Context, rawToken string) (Principal,
 	if user.Status != "active" {
 		return Principal{}, ErrVerificationNeeded
 	}
-	return Principal{SessionID: user.SessionID, UserID: user.UserID, UID: user.UID, Email: user.Email}, nil
+	return Principal{SessionID: user.SessionID, UserID: user.UserID, UID: user.UID, Email: user.Email, ActiveAccountID: user.ActiveAccountID, ActiveAccountKind: user.ActiveAccountKind, PrincipalType: user.PrincipalType}, nil
+}
+
+func (s *Service) SwitchAccount(ctx context.Context, principal Principal, accountID string) error {
+	return s.data.SetSessionAccount(ctx, principal.UserID, principal.SessionID, strings.TrimSpace(accountID))
 }
 
 // Freeze revokes every session, including the caller's current session. It is

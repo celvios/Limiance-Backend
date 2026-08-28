@@ -84,7 +84,11 @@ func requireSessionOrAPIKey(service *auth.Service, data *datamanager.Manager, en
 				return
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalContextKey{}, auth.Principal{SessionID: "", UserID: stored.UserID, UID: stored.UID, Email: stored.Email})))
+			if err := data.MarkAPIKeyUsed(r.Context(), hash[:]); err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "api_key_unavailable"})
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalContextKey{}, auth.Principal{SessionID: "", UserID: stored.UserID, UID: stored.UID, Email: stored.Email, ActiveAccountID: stored.AccountID, ActiveAccountKind: stored.AccountKind, APIKeyScope: stored.Scope, PrincipalType: "api_key"})))
 		})
 	}
 }
@@ -111,6 +115,10 @@ func (h *APIKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 	principal, ok := principalFromContext(r)
 	if !ok {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+		return
+	}
+	if principal.ActiveAccountKind == "subaccount" {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "api_key_main_account_required"})
 		return
 	}
 

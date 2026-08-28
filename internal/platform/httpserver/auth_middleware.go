@@ -31,6 +31,32 @@ func requireSession(service *auth.Service) func(http.Handler) http.Handler {
 				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authentication_unavailable"})
 				return
 			}
+			if principal.PrincipalType == "subaccount" {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "subaccount_scope_not_enabled"})
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalContextKey{}, principal)))
+		})
+	}
+}
+
+func requireAccountSession(service *auth.Service) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			cookie, err := r.Cookie(sessionCookieName)
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+				return
+			}
+			principal, err := service.Authenticate(r.Context(), cookie.Value)
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+				return
+			}
+			if principal.ActiveAccountID == "" {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "account_context_required"})
+				return
+			}
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalContextKey{}, principal)))
 		})
 	}

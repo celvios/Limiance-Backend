@@ -75,6 +75,17 @@ func (s *Service) UserRoles(ctx context.Context, actorID, userID string) ([]data
 	return s.data.UserRoles(ctx, userID)
 }
 
+func (s *Service) AuditEvents(ctx context.Context, actorID string, limit int, cursor, action, resourceType, resourceID string) ([]datamanager.AuditEvent, error) {
+	allowed, err := s.data.HasRole(ctx, actorID, "auditor")
+	if err != nil {
+		return nil, err
+	}
+	if !allowed {
+		return nil, ErrNotPlatformAdministrator
+	}
+	return s.data.AuditEvents(ctx, limit, strings.TrimSpace(cursor), strings.TrimSpace(action), strings.TrimSpace(resourceType), strings.TrimSpace(resourceID))
+}
+
 func (s *Service) SetUserRole(ctx context.Context, actorID, userID, role string, grant bool) (bool, error) {
 	if _, ok := allowedRoles[role]; !ok || userID == "" {
 		return false, ErrInvalidRole

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -19,6 +20,38 @@ type AdminHandler struct {
 
 func NewAdminHandler(service *admin.Service, logger *slog.Logger) *AdminHandler {
 	return &AdminHandler{service: service, logger: logger}
+}
+
+func (h *AdminHandler) AuditEvents(w http.ResponseWriter, r *http.Request) {
+	p, ok := principalFromContext(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+		return
+	}
+	limit := 50
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 100 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_limit"})
+			return
+		}
+		limit = parsed
+	}
+	items, err := h.service.AuditEvents(r.Context(), p.UserID, limit, r.URL.Query().Get("cursor"), r.URL.Query().Get("action"), r.URL.Query().Get("resource_type"), r.URL.Query().Get("resource_id"))
+	if errors.Is(err, admin.ErrNotPlatformAdministrator) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "auditor_role_required"})
+		return
+	}
+	if err != nil {
+		h.logger.Error("audit events read failed", "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "audit_events_unavailable"})
+		return
+	}
+	response := map[string]any{"events": items}
+	if len(items) == limit {
+		response["next_cursor"] = items[len(items)-1].ID
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (h *AdminHandler) ApproveDeposit(w http.ResponseWriter, r *http.Request) {

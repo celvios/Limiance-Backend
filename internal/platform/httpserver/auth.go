@@ -140,6 +140,35 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "authenticated"})
 }
 
+func (h *AuthHandler) SubaccountLogin(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	defer r.Body.Close()
+	var input auth.SubaccountLoginInput
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+		return
+	}
+	input.UserAgent, input.ClientIP = requestDeviceMetadata(r)
+	result, err := h.service.SubaccountLogin(r.Context(), input)
+	if err != nil {
+		if errors.Is(err, auth.ErrInvalidCredentials) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_credentials"})
+			return
+		}
+		if errors.Is(err, auth.ErrAccountFrozen) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "subaccount_unavailable"})
+			return
+		}
+		h.logger.Error("subaccount login failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "login_failed"})
+		return
+	}
+	h.setSessionCookie(w, result)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "authenticated", "principal_type": "subaccount"})
+}
+
 func (h *AuthHandler) VerifyTOTPLogin(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
 	defer r.Body.Close()
