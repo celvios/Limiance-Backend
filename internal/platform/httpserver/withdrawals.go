@@ -185,6 +185,8 @@ func (h *WithdrawalHandler) Request(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "withdrawal_account_unavailable", "message": "The selected funding account is unavailable."})
 		} else if errors.Is(err, datamanager.ErrInsufficientWithdrawalBalance) {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "insufficient_withdrawal_balance", "message": "Your available balance is too low for this withdrawal."})
+		} else if errors.Is(err, datamanager.ErrWithdrawalNotAllowed) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "withdrawal_route_unavailable", "message": "This asset and network withdrawal route is not enabled for staging."})
 		} else {
 			h.logger.Error("withdrawal request failed", "error", err)
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "withdrawal_rejected"})
