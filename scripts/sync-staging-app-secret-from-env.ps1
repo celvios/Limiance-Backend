@@ -1,5 +1,6 @@
 param(
-    [string]$EnvFile = '.env'
+    [string]$EnvFile = '.env',
+    [string]$PrivateKeyFile = 'fireblocks_sandbox_private.key'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,6 +42,9 @@ foreach ($line in Get-Content -LiteralPath $EnvFile) {
     }
     if ($key -eq 'FIREBLOCKS_PRIVATE_KEY') {
         $value = $value -replace '\\r?n', "`n"
+        if (Test-Path -LiteralPath $PrivateKeyFile) {
+            $value = [System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $PrivateKeyFile)).Trim()
+        }
     }
     if ($allowedKeys -contains $key -and -not [string]::IsNullOrWhiteSpace($value)) {
         $local[$key] = $value

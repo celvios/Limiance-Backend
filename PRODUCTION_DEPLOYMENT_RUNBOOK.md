@@ -72,3 +72,112 @@ Production launch requires written approval from engineering, security, operatio
 - Reconciliation reports match and alerting is tested.
 - Rollback image and rollback procedure are ready.
 - Support and incident contacts are staffed for launch.
+
+## Production deployment sequence
+
+Use the deployment sequence below as the controlled cutover procedure for the first production release and any later hotfixes that require a live release.
+
+### 1. Final readiness freeze
+
+- Confirm no unreviewed database schema drift, config drift, or provider credential changes remain in progress.
+- Lock the production release branch or tag and record the release commit SHA, image digest, migration version, and operator name.
+- Confirm the launch window, support coverage, and incident command structure are in place.
+- Ensure all production-facing providers are in their live mode, not sandbox mode, and that their production webhook endpoints are reachable from the internet.
+
+### 2. Pre-deploy validation
+
+- Verify the production image was built from the approved commit and signed if your process requires signing.
+- Confirm ECS task definitions reference the intended image digest, environment variables, secrets, and security groups.
+- Confirm the ALB target group and health checks are pointing at the correct service and port.
+- Confirm RDS, Redis, SQS, and CloudWatch are all accessible from the production ECS tasks only through private networking.
+- Validate provider configuration for Fireblocks, KYC, email, SMS, webhook callbacks, and chain-risk integrations against production credentials.
+
+### 3. Migrations and schema gate
+
+- Run the migration task in a one-off ECS task or equivalent deployment job before switching traffic to the new API version.
+- Check application logs for migration start, completion, and exit status. Capture the exact migration version and timestamp.
+- Validate that the application can connect to the production database using the runtime-managed secret and can read the new schema version.
+- Do not proceed if any migration fails, hangs, or leaves the schema in a partially upgraded state.
+
+### 4. Deploy the new version
+
+- Deploy the API service first with a single controlled rollout, keeping at least two healthy tasks in service before raising traffic.
+- Deploy workers and background consumers after the API reaches healthy status and the migration gate is green.
+- Confirm ECS deployment circuit breaker is enabled and that rollback is configured to a previously known-good image.
+- Watch ALB health check results, task restarts, CPU, and memory consumption throughout the rollout.
+
+### 5. Production smoke checks
+
+Run a short, explicit smoke suite immediately after deployment and before broad customer access:
+
+- POST to the health check endpoint and verify `200 OK` from `/healthz` and `/readyz`.
+- Confirm the API can authenticate a test user and issue a valid session/token pair.
+- Test KYC submission and status reporting using a safe test profile or a controlled staging-like account that does not involve real funds.
+- Verify deposit webhook ingestion, deposit detection, and ledger crediting with a known test wallet or mock provider callback in production-safe conditions.
+- Verify withdrawal initiation, approval flow, and kill-switch behavior in a non-live or low-risk scenario.
+- Confirm alerts are firing for a synthetic error or test queue event to prove the monitoring path is working.
+- Ensure the outbox, event router, and notification workers are actively processing without backlog growth.
+
+### 6. Traffic cutover
+
+- Begin with a minimal traffic percentage, if your architecture supports gradual routing or weighted target groups.
+- Increase traffic only after the new version remains healthy for a defined observation period with no elevated errors or invalid queue backlog.
+- Keep the old version warm and available for quick rollback until the release has resided in production for a sufficient observation window.
+- Notify the support team, compliance contacts, treasury, and operations lead that the release is live and the incident bridge is standing by.
+
+### 7. Post-launch verification window
+
+- Monitor for at least 30 minutes or a longer defined period depending on the release scope and risk profile.
+- Check ALB latency, 4xx/5xx rate, queue depth, DLQ volume, webhook retry counts, and ledger reconciliation drift.
+- Review application logs for errors involving custody, deposits, withdrawals, conversions, notifications, or auth flows.
+- Verify that customer-facing systems remain operational without data corruption, duplicate crediting, or missing notifications.
+- Confirm the rollback trigger conditions remain clear and the rollback owner is available.
+
+## Rollback plan
+
+Rollback readiness is mandatory for every production deployment. Rollback must be practiced before launch and documented in a release ticket or runbook.
+
+### Trigger conditions
+
+Rollback should happen immediately when one or more of the following occurs:
+
+- Health checks fail across the production API fleet and the issue cannot be remediated within the defined incident window.
+- Migrations leave the database in a broken or partial state, or the application cannot safely read/write the schema.
+- Significant ledger discrepancies, duplicate fund credits, or missing settlement events appear after the rollout.
+- External provider integrations fail in a way that prevents core deposit, withdrawal, or custody operations from being performed safely.
+- Authentication, authorization, or compliance controls stop working as designed.
+- Unrecoverable queue backlog or consumer deadlocks create operational risk.
+
+### Rollback procedure
+
+- Stop or pause new traffic to the failing version using the ALB, weighted target groups, or a manual service drain.
+- Revert the ECS service to the last known-good image digest and task definition.
+- Run the rollback database check: confirm the schema is consistent with the previous version and that no partial migration remains.
+- If the release included a new incompatible migration, restore from the latest approved backup or use the pre-approved recovery path only after engineering and DB owner sign-off.
+- Re-enable traffic only after the old version is healthy, migrations are validated, and the rollback is confirmed in logs.
+- Communicate the rollback clearly to support, compliance, and operations, and document the root cause before the next release attempt.
+
+### Rollback validation
+
+- Verify `/healthz` and `/readyz` are green again on the recovered tasks.
+- Confirm backlog drains or worker queues recover without data loss or duplicate processing.
+- Validate that deposit, withdrawal, KYC, and ledger reconciliation flows operate as expected on the reverted version.
+- Review infrastructure alerts to ensure no unhandled outage remains.
+- Record the incident and postmortem actions before closing the release.
+
+## Daily operational guardrails
+
+- Review CloudWatch dashboards and alerts daily during launch and at least once per shift during the first week of production operation.
+- Check queue depth, DLQ count, provider webhook failures, and reconciliation mismatches before the business day begins.
+- Verify backups, PITR readiness, and encryption key rotation schedules remain on track.
+- Review IAM access changes, security group modifications, and secret rotation events for any unauthorized activity.
+- Keep a written log of production issues, mitigation actions, and owner assignments.
+
+## Launch closeout
+
+Production is considered stable only after the launch observation window has passed without critical incident, reconciliation drift, or provider failure. At closeout:
+
+- Save the final release record with commit SHA, image digest, migration version, and approval names.
+- Archive the deployment logs, support notes, and rollback evidence in the engineering change record.
+- Confirm the incident bridge, escalation chain, and on-call ownership remain assigned for the next release cycle.
+- Schedule the first retrospective to review launch performance, operational issues, and changes needed before the next production release.
