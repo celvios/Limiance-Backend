@@ -126,7 +126,12 @@ func (h *AccountHandler) SubaccountBalances(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
 		return
 	}
-	items, err := h.service.SubaccountBalances(r.Context(), principal.UserID, r.PathValue("account_id"))
+	accountID := r.PathValue("account_id")
+	if principal.PrincipalType == "subaccount" && accountID != principal.ActiveAccountID {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "account_not_available"})
+		return
+	}
+	items, err := h.service.SubaccountBalances(r.Context(), principal.UserID, accountID)
 	if err != nil {
 		h.logger.Error("subaccount balances read failed", "error", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "subaccount_balances_unavailable"})
