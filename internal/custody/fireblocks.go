@@ -253,18 +253,18 @@ func parseRSAPrivateKey(value []byte) (*rsa.PrivateKey, error) {
 	value = []byte(strings.ReplaceAll(string(value), `\n`, "\n"))
 	block, _ := pem.Decode(value)
 	if block == nil {
-		return nil, errors.New("fireblocks private key is not PEM")
+		return nil, errors.New("fireblocks private key is not valid PEM-encoded RSA material")
 	}
 	if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
 		return key, nil
 	}
 	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		return nil, errors.New("fireblocks private key is not a supported RSA key")
+		return nil, errors.New("fireblocks private key is not a supported RSA private key; ensure it is a PEM-encoded PKCS#1 or PKCS#8 RSA private key")
 	}
 	rsaKey, ok := key.(*rsa.PrivateKey)
 	if !ok {
-		return nil, errors.New("fireblocks private key is not RSA")
+		return nil, errors.New("fireblocks private key is not an RSA private key; ensure it is PEM-encoded PKCS#1 or PKCS#8 RSA material")
 	}
 	return rsaKey, nil
 }

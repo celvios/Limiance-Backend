@@ -161,10 +161,14 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 		case "self_custody_testnet":
 			if provider, err := custody.NewSelfCustodyTestnetClient(cfg.SelfCustodySignerURL, nil); err == nil {
 				custodyProvider = provider
+			} else {
+				logger.Error("self-custody signer initialization failed", "error", err)
 			}
 		default:
 			if provider, err := custody.NewFireblocksClient(custody.FireblocksConfig{APIKey: cfg.FireblocksAPIKey, PrivateKey: cfg.FireblocksPrivateKey, BaseURL: cfg.FireblocksBaseURL}); err == nil {
 				custodyProvider = provider
+			} else {
+				logger.Error("fireblocks client initialization failed", "error", err)
 			}
 		}
 		depositHandler := NewDepositHandler(custody.NewService(data, custodyProvider, custody.RoutePolicy{Mode: cfg.CustodyMode, SelfCustodyTestnetEnabled: cfg.SelfCustodyTestnetEnabled}), logger)

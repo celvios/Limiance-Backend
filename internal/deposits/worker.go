@@ -55,7 +55,14 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 					return processed, lookupErr
 				}
 				if !found {
-					return processed, fmt.Errorf("deposit webhook %s does not match an active deposit address", payload.ReceiptID)
+					if err := w.data.MarkWebhookProcessed(ctx, payload.ReceiptID); err != nil {
+						return processed, err
+					}
+					if err := w.queue.Delete(ctx, message.ReceiptHandle); err != nil {
+						return processed, err
+					}
+					processed++
+					continue
 				}
 				amountAtomic, amountErr := AtomicAmount(event.Amount, decimals)
 				if amountErr != nil {

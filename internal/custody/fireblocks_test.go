@@ -19,6 +19,16 @@ import (
 	"time"
 )
 
+func TestParseRSAPrivateKeyReportsActionableError(t *testing.T) {
+	_, err := parseRSAPrivateKey([]byte("-----BEGIN PRIVATE KEY-----\nnot-a-real-key\n-----END PRIVATE KEY-----"))
+	if err == nil {
+		t.Fatal("expected malformed key error")
+	}
+	if !strings.Contains(err.Error(), "RSA") || !strings.Contains(err.Error(), "PEM") {
+		t.Fatalf("expected actionable RSA key error, got %q", err)
+	}
+}
+
 func TestFireblocksClientUsesSignedJWTAndDocumentedVaultPaths(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
