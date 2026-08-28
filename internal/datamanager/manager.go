@@ -1451,7 +1451,7 @@ func (m *Manager) CreateSubaccountWithOptions(ctx context.Context, input Subacco
 }
 
 func (m *Manager) UserSubaccounts(ctx context.Context, userID string) ([]SubaccountSummary, error) {
-	rows, err := m.pool.Query(ctx, `SELECT a.id::text,a.name,s.nickname,s.type,s.account_mode,COALESCE(s.username,''),a.status,a.created_at FROM accounts a JOIN subaccounts s ON s.account_id=a.id WHERE a.user_id=$1 AND a.kind='subaccount' AND a.status <> 'deleted' ORDER BY a.created_at, a.id`, userID)
+	rows, err := m.pool.Query(ctx, `SELECT a.id::text,a.name,s.nickname,s.type,s.account_mode,COALESCE(s.username,''),s.status,a.created_at FROM accounts a JOIN subaccounts s ON s.account_id=a.id WHERE a.user_id=$1 AND a.kind='subaccount' AND s.status <> 'deleted' ORDER BY a.created_at, a.id`, userID)
 	if err != nil {
 		return nil, err
 	}
