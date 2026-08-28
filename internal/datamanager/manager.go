@@ -74,18 +74,18 @@ func (m *Manager) ResolveExternalIdentity(ctx context.Context, provider, subject
 	return user, err
 }
 
-func (m *Manager) CreateOAuthState(ctx context.Context, stateHash []byte, provider, redirectURL, codeVerifier string, expiresAt time.Time) error {
-	_, err := m.pool.Exec(ctx, `INSERT INTO oauth_states (state_hash, provider, redirect_url, code_verifier, expires_at) VALUES ($1, $2, $3, $4, $5)`, stateHash, provider, redirectURL, codeVerifier, expiresAt)
+func (m *Manager) CreateOAuthState(ctx context.Context, stateHash []byte, provider, redirectURL, codeVerifier, nonce string, expiresAt time.Time) error {
+	_, err := m.pool.Exec(ctx, `INSERT INTO oauth_states (state_hash, provider, redirect_url, code_verifier, nonce, expires_at) VALUES ($1, $2, $3, $4, $5, $6)`, stateHash, provider, redirectURL, codeVerifier, nonce, expiresAt)
 	return err
 }
 
-func (m *Manager) ConsumeOAuthState(ctx context.Context, stateHash []byte, provider, redirectURL string) (string, error) {
-	var codeVerifier string
-	err := m.pool.QueryRow(ctx, `UPDATE oauth_states SET consumed_at=now() WHERE state_hash=$1 AND provider=$2 AND redirect_url=$3 AND consumed_at IS NULL AND expires_at > now() RETURNING code_verifier`, stateHash, provider, redirectURL).Scan(&codeVerifier)
+func (m *Manager) ConsumeOAuthState(ctx context.Context, stateHash []byte, provider, redirectURL string) (string, string, error) {
+	var codeVerifier, nonce string
+	err := m.pool.QueryRow(ctx, `UPDATE oauth_states SET consumed_at=now() WHERE state_hash=$1 AND provider=$2 AND redirect_url=$3 AND consumed_at IS NULL AND expires_at > now() RETURNING code_verifier, nonce`, stateHash, provider, redirectURL).Scan(&codeVerifier, &nonce)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return codeVerifier, nil
+	return codeVerifier, nonce, nil
 }
 
 type UserProfile struct {

@@ -56,11 +56,11 @@ func NewOIDCProvider(ctx context.Context, cfg OIDCProviderConfig) (*OIDCProvider
 	}, nil
 }
 
-func (p *OIDCProvider) AuthURL(state, verifier string) string {
-	return p.config.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.S256ChallengeOption(verifier))
+func (p *OIDCProvider) AuthURL(state, verifier, nonce string) string {
+	return p.config.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.S256ChallengeOption(verifier), oauth2.SetAuthURLParam("nonce", nonce))
 }
 
-func (p *OIDCProvider) Claims(ctx context.Context, code, state, verifier string) (ExternalClaims, error) {
+func (p *OIDCProvider) Claims(ctx context.Context, code, expectedNonce, verifier string) (ExternalClaims, error) {
 	token, err := p.config.Exchange(ctx, code, oauth2.VerifierOption(verifier))
 	if err != nil {
 		return ExternalClaims{}, ErrExternalAuthentication
@@ -79,7 +79,7 @@ func (p *OIDCProvider) Claims(ctx context.Context, code, state, verifier string)
 		EmailVerified bool   `json:"email_verified"`
 		Nonce         string `json:"nonce"`
 	}
-	if err := idToken.Claims(&claims); err != nil || claims.Subject == "" || claims.Nonce != state {
+	if err := idToken.Claims(&claims); err != nil || claims.Subject == "" || claims.Nonce == "" || claims.Nonce != expectedNonce {
 		return ExternalClaims{}, ErrExternalAuthentication
 	}
 	if claims.Email != "" {

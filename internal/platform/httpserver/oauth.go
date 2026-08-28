@@ -28,11 +28,16 @@ func (h *OAuthHandler) Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	verifier := oauth2.GenerateVerifier()
-	if err := h.data.CreateOAuthState(r.Context(), stateHash, h.provider.Name, h.provider.Redirect, verifier, time.Now().UTC().Add(10*time.Minute)); err != nil {
+	nonce, _, err := session.New()
+	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authentication_unavailable"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"authorization_url": h.provider.AuthURL(state, verifier)})
+	if err := h.data.CreateOAuthState(r.Context(), stateHash, h.provider.Name, h.provider.Redirect, verifier, nonce, time.Now().UTC().Add(10*time.Minute)); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authentication_unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"authorization_url": h.provider.AuthURL(state, verifier, nonce)})
 }
 
 func (h *OAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
@@ -42,12 +47,12 @@ func (h *OAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_oauth_callback"})
 		return
 	}
-	verifier, err := h.data.ConsumeOAuthState(r.Context(), session.Hash(state), h.provider.Name, h.provider.Redirect)
+	verifier, nonce, err := h.data.ConsumeOAuthState(r.Context(), session.Hash(state), h.provider.Name, h.provider.Redirect)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_or_expired_oauth_state"})
 		return
 	}
-	claims, err := h.provider.Claims(r.Context(), code, state, verifier)
+	claims, err := h.provider.Claims(r.Context(), code, nonce, verifier)
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "external_authentication_failed"})
 		return

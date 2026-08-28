@@ -1,0 +1,2 @@
+ALTER TABLE oauth_states
+    ADD COLUMN nonce TEXT NOT NULL DEFAULT '';
