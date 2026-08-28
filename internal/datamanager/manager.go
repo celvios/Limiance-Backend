@@ -2796,7 +2796,16 @@ type sessionRepository struct{ tx pgx.Tx }
 
 func (r sessionRepository) Create(ctx context.Context, userID string, tokenHash []byte, expiresAt time.Time, meta SessionMetadata) (string, error) {
 	var id string
-	err := r.tx.QueryRow(ctx, `INSERT INTO sessions (user_id, token_hash, expires_at, user_agent, client_ip) VALUES ($1, $2, $3, $4, NULLIF($5,'')::inet) RETURNING id::text`, userID, tokenHash, expiresAt, meta.UserAgent, meta.ClientIP).Scan(&id)
+	if err := r.tx.QueryRow(ctx, `INSERT INTO sessions (user_id, token_hash, expires_at, user_agent, client_ip) VALUES ($1, $2, $3, $4, NULLIF($5,'')::inet) RETURNING id::text`, userID, tokenHash, expiresAt, meta.UserAgent, meta.ClientIP).Scan(&id); err != nil {
+		return "", err
+	}
+	_, err := r.tx.Exec(ctx, `
+		INSERT INTO session_account_context (session_id, account_id)
+		SELECT $1, a.id
+		FROM accounts a
+		WHERE a.user_id = $2 AND a.kind = 'funding' AND a.status = 'active'
+		ORDER BY a.id
+		LIMIT 1`, id, userID)
 	return id, err
 }
 
