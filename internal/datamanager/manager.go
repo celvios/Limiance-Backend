@@ -1413,7 +1413,7 @@ type WithdrawalHistoryItem struct {
 }
 
 func (m *Manager) WithdrawalHistory(ctx context.Context, userID string, limit int) ([]WithdrawalHistoryItem, error) {
-	rows, err := m.pool.Query(ctx, `SELECT w.id::text,w.account_id::text,a.symbol,a.network,wa.address,wa.tag,w.amount_atomic::text,w.status,w.created_at,w.updated_at FROM withdrawals w JOIN assets a ON a.id=w.asset_id JOIN withdrawal_addresses wa ON wa.id=w.withdrawal_address_id WHERE w.user_id=$1 ORDER BY w.created_at DESC LIMIT $2`, userID, limit)
+	rows, err := m.pool.Query(ctx, `SELECT w.id::text,w.account_id::text,a.symbol,a.network,w.destination_address,w.destination_tag,w.amount_atomic::text,w.status,w.created_at,w.updated_at FROM withdrawals w JOIN assets a ON a.id=w.asset_id WHERE w.user_id=$1 ORDER BY w.created_at DESC LIMIT $2`, userID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -2202,13 +2202,14 @@ func (m *Manager) RequestWithdrawal(ctx context.Context, input WithdrawalInput) 
 		return WithdrawalResult{}, err
 	}
 	var assetID, addressID string
-	err = tx.QueryRow(ctx, `SELECT a.id::text, w.id::text FROM assets a JOIN withdrawal_addresses w ON w.asset_id=a.id WHERE a.symbol=$1 AND a.network=$2 AND a.status='enabled' AND w.user_id=$3 AND w.address=$4 AND w.tag=$5 AND w.status='active' AND w.activated_at <= now()`, input.AssetSymbol, input.Network, input.UserID, input.Address, input.Tag).Scan(&assetID, &addressID)
+	err = tx.QueryRow(ctx, `SELECT id::text FROM assets WHERE symbol=$1 AND network=$2 AND status='enabled'`, input.AssetSymbol, input.Network).Scan(&assetID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return WithdrawalResult{}, ErrWithdrawalAddressUnavailable
+		return WithdrawalResult{}, ErrWithdrawalNotAllowed
 	}
 	if err != nil {
 		return WithdrawalResult{}, err
 	}
+	_ = tx.QueryRow(ctx, `SELECT id::text FROM withdrawal_addresses WHERE user_id=$1 AND asset_id=$2 AND address=$3 AND tag=$4 AND status='active' AND activated_at <= now()`, input.UserID, assetID, input.Address, input.Tag).Scan(&addressID)
 	var kycOK bool
 	if err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM kyc_profiles WHERE user_id=$1 AND status='approved')`, input.UserID).Scan(&kycOK); err != nil || !kycOK {
 		if err != nil {
@@ -2230,7 +2231,7 @@ func (m *Manager) RequestWithdrawal(ctx context.Context, input WithdrawalInput) 
 	if available < input.AmountAtomic {
 		return WithdrawalResult{}, ErrInsufficientWithdrawalBalance
 	}
-	err = tx.QueryRow(ctx, `INSERT INTO withdrawals (user_id,account_id,asset_id,withdrawal_address_id,amount_atomic,idempotency_key,status) VALUES ($1,$2,$3,$4,$5,$6,'pending_approval') RETURNING id::text,status`, input.UserID, input.SourceAccountID, assetID, addressID, input.AmountAtomic, input.IdempotencyKey).Scan(&result.WithdrawalID, &result.Status)
+	err = tx.QueryRow(ctx, `INSERT INTO withdrawals (user_id,account_id,asset_id,withdrawal_address_id,destination_address,destination_tag,amount_atomic,idempotency_key,status) VALUES ($1,$2,$3,NULLIF($4,'')::uuid,$5,$6,$7,$8,'pending_approval') RETURNING id::text,status`, input.UserID, input.SourceAccountID, assetID, addressID, input.Address, input.Tag, input.AmountAtomic, input.IdempotencyKey).Scan(&result.WithdrawalID, &result.Status)
 	if err != nil {
 		return WithdrawalResult{}, err
 	}
@@ -2261,10 +2262,9 @@ func (m *Manager) ApprovedWithdrawals(ctx context.Context, provider string, limi
 	if limit < 1 || limit > 100 {
 		limit = 25
 	}
-	rows, err := m.pool.Query(ctx, `SELECT w.id::text,w.user_id::text,c.external_vault_id,a.custody_asset_id,wa.address,wa.tag,w.amount_atomic::text,a.decimals
+	rows, err := m.pool.Query(ctx, `SELECT w.id::text,w.user_id::text,c.external_vault_id,a.custody_asset_id,w.destination_address,w.destination_tag,w.amount_atomic::text,a.decimals
 		FROM withdrawals w
 		JOIN assets a ON a.id=w.asset_id
-		JOIN withdrawal_addresses wa ON wa.id=w.withdrawal_address_id
 		JOIN custody_wallets c ON c.user_id=w.user_id AND c.provider=$1 AND c.status='active'
 		WHERE w.status='approved' AND w.provider_transaction_id IS NULL AND a.status='enabled' AND a.custody_asset_id <> ''
 		ORDER BY w.created_at FOR UPDATE SKIP LOCKED LIMIT $2`, provider, limit)
