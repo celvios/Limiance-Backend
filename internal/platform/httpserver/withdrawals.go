@@ -177,6 +177,14 @@ func (h *WithdrawalHandler) Request(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_withdrawal"})
 		} else if errors.Is(err, datamanager.ErrWithdrawalsDisabled) {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "withdrawals_temporarily_disabled"})
+		} else if errors.Is(err, datamanager.ErrWithdrawalAddressUnavailable) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "withdrawal_address_unavailable", "message": "The withdrawal address is missing, inactive, or does not match this coin and network."})
+		} else if errors.Is(err, datamanager.ErrWithdrawalKYCRequired) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "withdrawal_kyc_required", "message": "Complete identity verification before withdrawing."})
+		} else if errors.Is(err, datamanager.ErrWithdrawalAccountUnavailable) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "withdrawal_account_unavailable", "message": "The selected funding account is unavailable."})
+		} else if errors.Is(err, datamanager.ErrInsufficientWithdrawalBalance) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "insufficient_withdrawal_balance", "message": "Your available balance is too low for this withdrawal."})
 		} else {
 			h.logger.Error("withdrawal request failed", "error", err)
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "withdrawal_rejected"})

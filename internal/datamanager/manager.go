@@ -1927,10 +1927,10 @@ func (m *Manager) SetUserRole(ctx context.Context, actorID, userID, role string,
 	if !grant {
 		action = "admin.role_revoked"
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO audit_events (actor_id,actor_type,action,resource_type,resource_id,metadata) VALUES ($1,'admin',$2,'user',$3,jsonb_build_object('role',$4))`, actorID, action, userID, role); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO audit_events (actor_id,actor_type,action,resource_type,resource_id,metadata) VALUES ($1,'admin',$2,'user',$3,jsonb_build_object('role',$4::text))`, actorID, action, userID, role); err != nil {
 		return false, err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO outbox_events (event_type,aggregate_type,aggregate_id,payload) VALUES ($1,'user',$2,jsonb_build_object('user_id',$2,'role',$3))`, action, userID, role); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO outbox_events (event_type,aggregate_type,aggregate_id,payload) VALUES ($1,'user',$2,jsonb_build_object('user_id',$2::text,'role',$3::text))`, action, userID, role); err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)
@@ -1977,6 +1977,9 @@ func (m *Manager) WithdrawalsEnabled(ctx context.Context) (bool, error) {
 
 var ErrDepositNotCreditable = errors.New("deposit is not creditable")
 var ErrWithdrawalNotAllowed = errors.New("withdrawal is not allowed")
+var ErrWithdrawalKYCRequired = errors.New("withdrawal requires approved kyc")
+var ErrWithdrawalAccountUnavailable = errors.New("withdrawal account unavailable")
+var ErrInsufficientWithdrawalBalance = errors.New("insufficient withdrawal balance")
 var ErrWithdrawalNotApprovable = errors.New("withdrawal is not approvable")
 var ErrWithdrawalsDisabled = errors.New("withdrawals are disabled")
 var ErrAdministratorRoleRequired = errors.New("platform administrator role is required")
@@ -2201,7 +2204,7 @@ func (m *Manager) RequestWithdrawal(ctx context.Context, input WithdrawalInput) 
 	var assetID, addressID string
 	err = tx.QueryRow(ctx, `SELECT a.id::text, w.id::text FROM assets a JOIN withdrawal_addresses w ON w.asset_id=a.id WHERE a.symbol=$1 AND a.network=$2 AND a.status='enabled' AND w.user_id=$3 AND w.address=$4 AND w.tag=$5 AND w.status='active' AND w.activated_at <= now()`, input.AssetSymbol, input.Network, input.UserID, input.Address, input.Tag).Scan(&assetID, &addressID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return WithdrawalResult{}, ErrWithdrawalNotAllowed
+		return WithdrawalResult{}, ErrWithdrawalAddressUnavailable
 	}
 	if err != nil {
 		return WithdrawalResult{}, err
@@ -2211,11 +2214,11 @@ func (m *Manager) RequestWithdrawal(ctx context.Context, input WithdrawalInput) 
 		if err != nil {
 			return WithdrawalResult{}, err
 		}
-		return WithdrawalResult{}, ErrWithdrawalNotAllowed
+		return WithdrawalResult{}, ErrWithdrawalKYCRequired
 	}
 	var owner, accountStatus string
 	if err = tx.QueryRow(ctx, `SELECT user_id::text,status FROM accounts WHERE id=$1 FOR UPDATE`, input.SourceAccountID).Scan(&owner, &accountStatus); err != nil || owner != input.UserID || accountStatus != "active" {
-		return WithdrawalResult{}, ErrWithdrawalNotAllowed
+		return WithdrawalResult{}, ErrWithdrawalAccountUnavailable
 	}
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, input.SourceAccountID+":"+assetID); err != nil {
 		return WithdrawalResult{}, err
@@ -2225,7 +2228,7 @@ func (m *Manager) RequestWithdrawal(ctx context.Context, input WithdrawalInput) 
 		return WithdrawalResult{}, err
 	}
 	if available < input.AmountAtomic {
-		return WithdrawalResult{}, ErrWithdrawalNotAllowed
+		return WithdrawalResult{}, ErrInsufficientWithdrawalBalance
 	}
 	err = tx.QueryRow(ctx, `INSERT INTO withdrawals (user_id,account_id,asset_id,withdrawal_address_id,amount_atomic,idempotency_key,status) VALUES ($1,$2,$3,$4,$5,$6,'pending_approval') RETURNING id::text,status`, input.UserID, input.SourceAccountID, assetID, addressID, input.AmountAtomic, input.IdempotencyKey).Scan(&result.WithdrawalID, &result.Status)
 	if err != nil {

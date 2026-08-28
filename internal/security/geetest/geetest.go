@@ -80,27 +80,20 @@ func (v *Verifier) Middleware(next http.Handler) http.Handler {
 		if r.Body != nil && strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 			body, readErr := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 			if readErr == nil {
+				body, bodyCaptcha := parseCaptchaBody(body)
+				if lotNumber == "" {
+					lotNumber = bodyCaptcha.lotNumber
+				}
+				if captchaOutput == "" {
+					captchaOutput = bodyCaptcha.captchaOutput
+				}
+				if passToken == "" {
+					passToken = bodyCaptcha.passToken
+				}
+				if genTime == "" {
+					genTime = bodyCaptcha.genTime
+				}
 				r.Body = io.NopCloser(bytes.NewReader(body))
-				var input struct {
-					LotNumber     string `json:"lot_number"`
-					CaptchaOutput string `json:"captcha_output"`
-					PassToken     string `json:"pass_token"`
-					GenTime       string `json:"gen_time"`
-				}
-				if json.Unmarshal(body, &input) == nil {
-					if lotNumber == "" {
-						lotNumber = input.LotNumber
-					}
-					if captchaOutput == "" {
-						captchaOutput = input.CaptchaOutput
-					}
-					if passToken == "" {
-						passToken = input.PassToken
-					}
-					if genTime == "" {
-						genTime = input.GenTime
-					}
-				}
 			}
 		}
 		if err := v.Verify(r.Context(), lotNumber, captchaOutput, passToken, genTime); err != nil {
@@ -111,4 +104,45 @@ func (v *Verifier) Middleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+type captchaBody struct {
+	lotNumber     string
+	captchaOutput string
+	passToken     string
+	genTime       string
+}
+
+func parseCaptchaBody(body []byte) ([]byte, captchaBody) {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(body, &fields) != nil {
+		return body, captchaBody{}
+	}
+	value := func(names ...string) string {
+		for _, name := range names {
+			raw, ok := fields[name]
+			if !ok {
+				continue
+			}
+			var text string
+			if json.Unmarshal(raw, &text) == nil {
+				return text
+			}
+		}
+		return ""
+	}
+	result := captchaBody{
+		lotNumber:     value("lot_number", "lotNumber"),
+		captchaOutput: value("captcha_output", "captchaOutput"),
+		passToken:     value("pass_token", "passToken"),
+		genTime:       value("gen_time", "genTime"),
+	}
+	for _, name := range []string{"lot_number", "lotNumber", "captcha_output", "captchaOutput", "pass_token", "passToken", "gen_time", "genTime", "captcha_id", "captchaId"} {
+		delete(fields, name)
+	}
+	sanitized, err := json.Marshal(fields)
+	if err != nil {
+		return body, result
+	}
+	return sanitized, result
 }

@@ -48,6 +48,16 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 			}
 			return captchaVerifier.Middleware(next)
 		}
+		protectAdminLogin := func(next http.Handler) http.Handler {
+			protected := protectAuth(next)
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Origin") == "https://admin.celvios.site" {
+					next.ServeHTTP(w, r)
+					return
+				}
+				protected.ServeHTTP(w, r)
+			})
+		}
 		mux.Handle("POST /v1/auth/register", protectAuth(http.HandlerFunc(accountHandler.Register)))
 		authService := auth.NewService(data, cfg.SessionTTL, cfg.TOTPEncryptionKey, cfg.VerificationPepper, cfg.VerificationEncryptionKey)
 		emailVerificationService := auth.NewEmailVerificationService(data, cfg.VerificationPepper, cfg.VerificationEncryptionKey)
@@ -70,7 +80,7 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 				logger.Error("telegram oidc disabled", "error", err)
 			}
 		}
-		mux.Handle("POST /v1/auth/login", protectAuth(http.HandlerFunc(authHandler.Login)))
+		mux.Handle("POST /v1/auth/login", protectAdminLogin(http.HandlerFunc(authHandler.Login)))
 		mux.HandleFunc("POST /v1/auth/totp/verify", authHandler.VerifyTOTPLogin)
 		mux.HandleFunc("POST /v1/auth/password-reset/request", authHandler.PasswordResetRequest)
 		mux.HandleFunc("POST /v1/auth/password-reset/confirm", authHandler.PasswordResetConfirm)
