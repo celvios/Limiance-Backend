@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/limiance/backend/internal/datamanager"
 	"github.com/limiance/backend/internal/platform/queue"
@@ -45,22 +46,26 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 		}
 		if !alreadyProcessed && raw != nil {
 			event, parseErr := ParseFireblocksEvent(raw)
-			if parseErr == nil && isDepositStatus(event.Status) {
+			if parseErr != nil {
+				return processed, fmt.Errorf("deposit webhook %s is not processable: %w", payload.ReceiptID, parseErr)
+			}
+			if isDepositStatus(event.Status) {
 				decimals, found, lookupErr := w.data.DepositAssetDecimals(ctx, event.AssetID, event.DestinationAddress, event.DestinationTag)
 				if lookupErr != nil {
 					return processed, lookupErr
 				}
-				if found {
-					amountAtomic, amountErr := AtomicAmount(event.Amount, decimals)
-					if amountErr != nil {
-						return processed, amountErr
-					}
-					if _, err := w.data.ApplyDepositObservation(ctx, datamanager.DepositObservation{ProviderTransactionID: event.ProviderTransactionID, CustodyAssetID: event.AssetID, DestinationAddress: event.DestinationAddress, DestinationTag: event.DestinationTag, TransactionHash: event.TransactionHash, BlockchainIndex: event.BlockchainIndex, AmountAtomic: amountAtomic, Confirmations: event.Confirmations, BlockHash: event.BlockHash, BlockHeight: event.BlockHeight, Status: event.Status}); err != nil {
-						return processed, err
-					}
+				if !found {
+					return processed, fmt.Errorf("deposit webhook %s does not match an active deposit address", payload.ReceiptID)
+				}
+				amountAtomic, amountErr := AtomicAmount(event.Amount, decimals)
+				if amountErr != nil {
+					return processed, amountErr
+				}
+				if _, err := w.data.ApplyDepositObservation(ctx, datamanager.DepositObservation{ProviderTransactionID: event.ProviderTransactionID, CustodyAssetID: event.AssetID, DestinationAddress: event.DestinationAddress, DestinationTag: event.DestinationTag, TransactionHash: event.TransactionHash, BlockchainIndex: event.BlockchainIndex, AmountAtomic: amountAtomic, Confirmations: event.Confirmations, BlockHash: event.BlockHash, BlockHeight: event.BlockHeight, Status: event.Status}); err != nil {
+					return processed, err
 				}
 			}
-			if parseErr == nil && event.ProviderTransactionID != "" {
+			if event.ProviderTransactionID != "" {
 				if _, err := w.data.RecordWithdrawalCustodyUpdate(ctx, datamanager.WithdrawalCustodyUpdate{ProviderTransactionID: event.ProviderTransactionID, Status: event.Status, TransactionHash: event.TransactionHash}); err != nil {
 					return processed, err
 				}

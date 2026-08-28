@@ -61,9 +61,15 @@ func main() {
 	deposit, err := data.DepositForReconciliation(ctx, *transactionHash)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			fatal("deposit not found")
+			deposit = datamanager.DepositReconciliation{
+				ProviderTransactionID: *transactionHash,
+				CustodyAssetID:        "ETH_TEST5",
+				Network:               "ethereum_sepolia",
+				TransactionHash:       *transactionHash,
+			}
+		} else {
+			fatal(err.Error())
 		}
-		fatal(err.Error())
 	}
 	if deposit.CustodyAssetID != "ETH_TEST5" || deposit.Network != "ethereum_sepolia" || deposit.DestinationTag != "" {
 		fatal("deposit is not a direct ETH Sepolia deposit")
@@ -82,6 +88,15 @@ func main() {
 	}
 	var transactionValue transaction
 	call(ctx, client, *rpcURL, "eth_getTransactionByHash", []any{*transactionHash}, &transactionValue)
+	if deposit.DestinationAddress == "" {
+		deposit.DestinationAddress = transactionValue.To
+		deposit.AmountAtomic = hexToDecimal(transactionValue.Value)
+		if _, found, err := data.DepositAssetDecimals(ctx, deposit.CustodyAssetID, deposit.DestinationAddress, ""); err != nil {
+			fatal(err.Error())
+		} else if !found {
+			fatal("transaction destination is not an active ETH Sepolia deposit address")
+		}
+	}
 	if !strings.EqualFold(transactionValue.To, deposit.DestinationAddress) {
 		fatal("transaction destination does not match the deposit address")
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/limiance/backend/internal/platform/queue"
@@ -66,6 +67,13 @@ func (c *Consumer) RunOnce(ctx context.Context) (int, error) {
 		}
 		if message.Event.Type != "email.verification_requested" && message.Event.Type != "email.password_reset_requested" {
 			if err := c.processNotification(ctx, message.Event); err != nil {
+				if strings.Contains(err.Error(), "message authentication failed") {
+					if deleteErr := c.queue.Delete(ctx, message.ReceiptHandle); deleteErr != nil {
+						return processed, deleteErr
+					}
+					processed++
+					continue
+				}
 				return processed, err
 			}
 			if err := c.queue.Delete(ctx, message.ReceiptHandle); err != nil {
@@ -84,6 +92,13 @@ func (c *Consumer) RunOnce(ctx context.Context) (int, error) {
 		}
 		code, err := envelope.Open(c.encryptionKey, payload.CodeCiphertext)
 		if err != nil {
+			if strings.Contains(err.Error(), "message authentication failed") {
+				if deleteErr := c.queue.Delete(ctx, message.ReceiptHandle); deleteErr != nil {
+					return processed, deleteErr
+				}
+				processed++
+				continue
+			}
 			return processed, err
 		}
 		expiresAt, err := time.Parse(time.RFC3339, payload.ExpiresAt)
