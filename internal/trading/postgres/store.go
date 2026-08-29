@@ -493,10 +493,9 @@ func findOwnedByID(ctx context.Context, tx pgx.Tx, userID, accountID, orderID st
 }
 
 func releaseOrderHold(ctx context.Context, tx pgx.Tx, orderID string) error {
-	var accountID, assetID, amount string
-	err := tx.QueryRow(ctx, `UPDATE orders SET hold_released_at=now(),updated_at=now()
-		WHERE id=$1 AND hold_released_at IS NULL AND hold_asset_id IS NOT NULL
-		RETURNING account_id::text,hold_asset_id::text,hold_amount_atomic::text`, orderID).Scan(&accountID, &assetID, &amount)
+	var accountID, assetID, originalRaw string
+	err := tx.QueryRow(ctx, `SELECT account_id::text,hold_asset_id::text,hold_amount_atomic::text FROM orders
+		WHERE id=$1 AND hold_released_at IS NULL AND hold_asset_id IS NOT NULL FOR UPDATE`, orderID).Scan(&accountID, &assetID, &originalRaw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
@@ -506,12 +505,35 @@ func releaseOrderHold(ctx context.Context, tx pgx.Tx, orderID string) error {
 	if err = ledger.LockAccountAsset(ctx, tx, accountID, assetID); err != nil {
 		return err
 	}
+	var consumedRaw string
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(SUM(hold_consumed_atomic),0)::text FROM trade_participants WHERE order_id=$1`, orderID).Scan(&consumedRaw); err != nil {
+		return err
+	}
+	original, originalOK := new(big.Int).SetString(originalRaw, 10)
+	consumed, consumedOK := new(big.Int).SetString(consumedRaw, 10)
+	if !originalOK || !consumedOK {
+		return fmt.Errorf("%w: order hold accounting is invalid", trading.ErrSettlementInvalid)
+	}
+	remaining := new(big.Int).Sub(original, consumed)
+	heldBalance, err := bucketBalance(ctx, tx, accountID, assetID, "held")
+	if err != nil {
+		return err
+	}
+	if remaining.Sign() < 0 || heldBalance.Cmp(remaining) < 0 {
+		return fmt.Errorf("%w: order held balance is inconsistent", trading.ErrSettlementInvalid)
+	}
+	if _, err = tx.Exec(ctx, `UPDATE orders SET hold_released_at=now(),updated_at=now() WHERE id=$1 AND hold_released_at IS NULL`, orderID); err != nil {
+		return err
+	}
+	if remaining.Sign() == 0 {
+		return nil
+	}
 	var journalID string
 	if err = tx.QueryRow(ctx, `INSERT INTO journals(idempotency_key,reference_type,reference_id) VALUES($1,'order_release',$2) RETURNING id::text`, "order-release:"+orderID, orderID).Scan(&journalID); err != nil {
 		return err
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO postings(journal_id,account_id,asset_id,bucket,direction,amount_atomic) VALUES
-		($1,$2,$3,'held','debit',$4::numeric),($1,$2,$3,'available','credit',$4::numeric)`, journalID, accountID, assetID, amount)
+		($1,$2,$3,'held','debit',$4::numeric),($1,$2,$3,'available','credit',$4::numeric)`, journalID, accountID, assetID, remaining.String())
 	return err
 }
 
