@@ -8,6 +8,7 @@ import (
 
 	"github.com/limiance/backend/internal/config"
 	"github.com/limiance/backend/internal/datamanager"
+	"github.com/limiance/backend/internal/fees"
 	"github.com/limiance/backend/internal/platform/database"
 )
 
@@ -20,7 +21,18 @@ func main() {
 		fatal(err)
 	}
 	defer pool.Close()
-	if err := datamanager.New(pool).RefreshUserFeeTiers(ctx); err != nil {
+
+	var cache fees.Cache
+	if cfg.RedisURL != "" {
+		redisCache, cacheErr := fees.NewRedisCache(cfg.RedisURL)
+		if cacheErr != nil {
+			fatal(cacheErr)
+		}
+		defer redisCache.Close()
+		cache = redisCache
+	}
+	service := fees.NewService(datamanager.New(pool), cache)
+	if err := service.RefreshUserFeeTiers(ctx); err != nil {
 		fatal(err)
 	}
 	fmt.Println("fee tiers refreshed")
