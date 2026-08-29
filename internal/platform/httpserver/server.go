@@ -134,7 +134,7 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 		mux.Handle("GET /v1/user/profile", requireSessionOrAPIKey(authService, data, cfg.VerificationEncryptionKey)(http.HandlerFunc(profileHandler.Get)))
 		mux.Handle("PUT /v1/user/preferences", requireSession(authService)(http.HandlerFunc(profileHandler.Preferences)))
 		feesHandler := NewFeesHandler(fees.NewService(data, nil))
-		limitsHandler := NewLimitsHandler()
+		limitsHandler := NewLimitsHandler(data)
 		pnlHandler := NewPnLHandler(pnl.NewService(data), logger)
 		mux.Handle("GET /v1/user/fees", requireSession(authService)(http.HandlerFunc(feesHandler.Get)))
 		mux.Handle("GET /v1/user/limits", requireSession(authService)(http.HandlerFunc(limitsHandler.Get)))
