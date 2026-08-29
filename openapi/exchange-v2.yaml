@@ -1,0 +1,236 @@
+openapi: 3.1.0
+info:
+  title: Limiance Exchange API
+  version: 2.0.0
+  description: Public market data and authenticated spot-order API. Monetary values are integer atomic-unit strings.
+servers:
+  - url: https://api.celvios.site/v2
+  - url: http://localhost:8080/v2
+tags:
+  - { name: Orders }
+  - { name: Market }
+paths:
+  /orders:
+    get:
+      operationId: listOrders
+      tags: [Orders]
+      security: [{ sessionCookie: [] }, { apiKey: [], apiTimestamp: [], apiNonce: [], apiSignature: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/PairQuery' }
+        - { name: status, in: query, schema: { type: string, enum: [PENDING, OPEN, PARTIALLY_FILLED] } }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Offset' }
+      responses:
+        '200':
+          description: Active orders
+          headers: { X-RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }, X-RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }, X-RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/OrderList' } } }
+        default: { $ref: '#/components/responses/Error' }
+    post:
+      operationId: placeOrder
+      tags: [Orders]
+      security: [{ sessionCookie: [] }, { apiKey: [], apiTimestamp: [], apiNonce: [], apiSignature: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PlaceOrder' }
+            examples:
+              limitBuy: { value: { pair: BTCUSDT, side: BUY, type: LIMIT, price: '5000000000000', quantity: '1000000', time_in_force: GTC } }
+              stopMarket: { value: { pair: BTCUSDT, side: SELL, type: STOP_MARKET, trigger_price: '4900000000000', quantity: '1000000', time_in_force: GTC } }
+      responses:
+        '201': { description: Order created, content: { application/json: { schema: { $ref: '#/components/schemas/Order' } } } }
+        '200': { description: Idempotent retry returned the original order, content: { application/json: { schema: { $ref: '#/components/schemas/Order' } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /orders/history:
+    get:
+      operationId: listOrderHistory
+      tags: [Orders]
+      security: [{ sessionCookie: [] }, { apiKey: [], apiTimestamp: [], apiNonce: [], apiSignature: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/PairQuery' }
+        - { name: status, in: query, schema: { type: string, enum: [FILLED, CANCELED, REJECTED] } }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Offset' }
+      responses:
+        '200': { description: Historical orders, content: { application/json: { schema: { $ref: '#/components/schemas/OrderList' } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /orders/{order_id}:
+    parameters:
+      - { name: order_id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      operationId: getOrder
+      tags: [Orders]
+      security: [{ sessionCookie: [] }, { apiKey: [], apiTimestamp: [], apiNonce: [], apiSignature: [] }]
+      responses:
+        '200': { description: Order, content: { application/json: { schema: { $ref: '#/components/schemas/Order' } } } }
+        default: { $ref: '#/components/responses/Error' }
+    delete:
+      operationId: cancelOrder
+      tags: [Orders]
+      security: [{ sessionCookie: [] }, { apiKey: [], apiTimestamp: [], apiNonce: [], apiSignature: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200': { description: Canceled order or its existing idempotent result, content: { application/json: { schema: { $ref: '#/components/schemas/Order' } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /market/markets:
+    get:
+      operationId: listMarkets
+      tags: [Market]
+      security: []
+      responses:
+        '200': { description: Enabled and halted spot markets, content: { application/json: { schema: { type: object, required: [markets], properties: { markets: { type: array, items: { $ref: '#/components/schemas/Market' } } } } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /market/orderbook/{pair}:
+    get:
+      operationId: getOrderBook
+      tags: [Market]
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/PairPath' }
+        - { name: depth, in: query, schema: { type: integer, minimum: 1, maximum: 1000, default: 20 } }
+      responses:
+        '200': { description: 'Sequenced L2 snapshot; each level is [price, quantity, order_count]', content: { application/json: { schema: { $ref: '#/components/schemas/OrderBook' } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /market/ticker/{pair}:
+    get:
+      operationId: getTicker
+      tags: [Market]
+      security: []
+      parameters: [{ $ref: '#/components/parameters/PairPath' }]
+      responses:
+        '200': { description: Rolling 24-hour ticker, content: { application/json: { schema: { $ref: '#/components/schemas/Ticker' } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /market/trades/{pair}:
+    get:
+      operationId: listMarketTrades
+      tags: [Market]
+      security: []
+      parameters: [{ $ref: '#/components/parameters/PairPath' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        '200': { description: Recent trades newest first, content: { application/json: { schema: { type: object, required: [trades], properties: { trades: { type: array, items: { $ref: '#/components/schemas/Trade' } } } } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /market/klines/{pair}:
+    get:
+      operationId: listKlines
+      tags: [Market]
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/PairPath' }
+        - { name: interval, in: query, required: true, schema: { type: string, enum: [1m, 5m, 15m, 1h, 4h, 1d, 1w, 1M] } }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200': { description: Candles oldest first, content: { application/json: { schema: { type: object, required: [candles], properties: { candles: { type: array, items: { $ref: '#/components/schemas/Candle' } } } } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /ws:
+    get:
+      operationId: marketWebSocket
+      tags: [Market]
+      security: []
+      description: Upgrade to WebSocket. Subscribe with `{"action":"subscribe","channel":"orderbook.BTCUSDT","depth":20}`. Channels are orderbook.PAIR, trades.PAIR, ticker.PAIR, and klines.PAIR.INTERVAL. A reconnect receives a snapshot before incremental events.
+      responses:
+        '101': { description: WebSocket upgrade }
+components:
+  securitySchemes:
+    sessionCookie: { type: apiKey, in: cookie, name: limiance_session }
+    apiKey: { type: apiKey, in: header, name: X-API-Key }
+    apiTimestamp: { type: apiKey, in: header, name: X-API-Timestamp, description: Unix seconds; accepted within 30 seconds. }
+    apiNonce: { type: apiKey, in: header, name: X-API-Nonce, description: Unique 16-128 character value; a replay is rejected. }
+    apiSignature:
+      type: apiKey
+      in: header
+      name: X-API-Signature
+      description: Lowercase hexadecimal HMAC-SHA256 over `timestamp\nnonce\nMETHOD\nescaped_path\nraw_query\nhex(sha256(raw_body))`.
+  parameters:
+    IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
+    PairPath: { name: pair, in: path, required: true, schema: { $ref: '#/components/schemas/Pair' } }
+    PairQuery: { name: pair, in: query, required: false, schema: { $ref: '#/components/schemas/Pair' } }
+    Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 1000, default: 100 } }
+    Offset: { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+  headers:
+    RateLimitLimit: { description: Requests allowed in this window, schema: { type: integer } }
+    RateLimitRemaining: { description: Requests remaining in this window, schema: { type: integer } }
+    RateLimitReset: { description: Unix seconds when the current window resets, schema: { type: integer, format: int64 } }
+  responses:
+    Error:
+      description: Versioned error envelope
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' }, examples: { insufficientBalance: { value: { error: { code: INSUFFICIENT_BALANCE, message: available balance is insufficient, request_id: 0123456789abcdef } } } } } }
+  schemas:
+    Atomic: { type: string, pattern: '^[0-9]+$', examples: ['5000000000000'] }
+    SignedAtomic: { type: string, pattern: '^-?[0-9]+$', examples: ['-20000000'] }
+    Pair: { type: string, pattern: '^[A-Z0-9]{2,20}$', examples: [BTCUSDT] }
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, request_id]
+          properties: { code: { type: string }, message: { type: string }, request_id: { type: string } }
+    PlaceOrder:
+      type: object
+      additionalProperties: false
+      required: [pair, side, type, quantity, time_in_force]
+      properties:
+        pair: { $ref: '#/components/schemas/Pair' }
+        side: { type: string, enum: [BUY, SELL] }
+        type: { type: string, enum: [LIMIT, MARKET, STOP_LIMIT, STOP_MARKET, TAKE_PROFIT_LIMIT] }
+        price: { $ref: '#/components/schemas/Atomic' }
+        trigger_price: { $ref: '#/components/schemas/Atomic' }
+        quantity: { $ref: '#/components/schemas/Atomic' }
+        time_in_force: { type: string, enum: [GTC, IOC, FOK] }
+        post_only: { type: boolean, default: false }
+        reduce_only: { type: boolean, default: false }
+    Order:
+      type: object
+      required: [id, pair, side, type, quantity, filled_quantity, remaining_quantity, avg_price, time_in_force, status, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        pair: { $ref: '#/components/schemas/Pair' }
+        side: { type: string, enum: [BUY, SELL] }
+        type: { type: string, enum: [LIMIT, MARKET, STOP_LIMIT, STOP_MARKET, TAKE_PROFIT_LIMIT] }
+        price: { $ref: '#/components/schemas/Atomic' }
+        trigger_price: { $ref: '#/components/schemas/Atomic' }
+        quantity: { $ref: '#/components/schemas/Atomic' }
+        filled_quantity: { $ref: '#/components/schemas/Atomic' }
+        remaining_quantity: { $ref: '#/components/schemas/Atomic' }
+        avg_price: { $ref: '#/components/schemas/Atomic' }
+        time_in_force: { type: string, enum: [GTC, IOC, FOK] }
+        status: { type: string, enum: [PENDING, TRIGGER_PENDING, OPEN, PARTIALLY_FILLED, FILLED, CANCELED, REJECTED] }
+        post_only: { type: boolean }
+        reduce_only: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    OrderList:
+      type: object
+      required: [orders, limit, offset, has_more]
+      properties: { orders: { type: array, items: { $ref: '#/components/schemas/Order' } }, limit: { type: integer }, offset: { type: integer }, has_more: { type: boolean } }
+    Market:
+      type: object
+      required: [pair, base_asset, quote_asset, price_scale, quantity_scale, status]
+      properties: { pair: { $ref: '#/components/schemas/Pair' }, base_asset: { type: string }, quote_asset: { type: string }, price_scale: { type: integer }, quantity_scale: { type: integer }, status: { type: string, enum: [active, halted] } }
+    OrderBook:
+      type: object
+      required: [sequence_id, timestamp_ns, pair, bids, asks]
+      properties:
+        sequence_id: { type: integer, minimum: 1 }
+        timestamp_ns: { type: integer, minimum: 1 }
+        pair: { $ref: '#/components/schemas/Pair' }
+        bids: { type: array, items: { $ref: '#/components/schemas/BookLevel' } }
+        asks: { type: array, items: { $ref: '#/components/schemas/BookLevel' } }
+    BookLevel: { type: array, minItems: 3, maxItems: 3, items: { type: string, pattern: '^[0-9]+$' } }
+    Ticker:
+      type: object
+      required: [pair, sequence_id, last_price, high_24h, low_24h, volume_24h, quote_volume_24h, change_24h]
+      properties: { pair: { $ref: '#/components/schemas/Pair' }, sequence_id: { type: integer }, last_price: { $ref: '#/components/schemas/Atomic' }, high_24h: { $ref: '#/components/schemas/Atomic' }, low_24h: { $ref: '#/components/schemas/Atomic' }, volume_24h: { $ref: '#/components/schemas/Atomic' }, quote_volume_24h: { $ref: '#/components/schemas/Atomic' }, change_24h: { $ref: '#/components/schemas/SignedAtomic' } }
+    Trade:
+      type: object
+      required: [pair, sequence_id, timestamp, price, quantity, quote_volume, side]
+      properties: { pair: { $ref: '#/components/schemas/Pair' }, sequence_id: { type: integer }, timestamp: { type: string, format: date-time }, price: { $ref: '#/components/schemas/Atomic' }, quantity: { $ref: '#/components/schemas/Atomic' }, quote_volume: { $ref: '#/components/schemas/Atomic' }, side: { type: string, enum: [BUY, SELL] } }
+    Candle:
+      type: object
+      required: [pair, interval, open_time, close_time, open, high, low, close, volume, quote_volume, trade_count, sequence_id]
+      properties: { pair: { $ref: '#/components/schemas/Pair' }, interval: { type: string, enum: [1m, 5m, 15m, 1h, 4h, 1d, 1w, 1M] }, open_time: { type: string, format: date-time }, close_time: { type: string, format: date-time }, open: { $ref: '#/components/schemas/Atomic' }, high: { $ref: '#/components/schemas/Atomic' }, low: { $ref: '#/components/schemas/Atomic' }, close: { $ref: '#/components/schemas/Atomic' }, volume: { $ref: '#/components/schemas/Atomic' }, quote_volume: { $ref: '#/components/schemas/Atomic' }, trade_count: { type: integer }, sequence_id: { type: integer } }

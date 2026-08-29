@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Limiance API
   version: 0.1.0
-  description: Phase 1 exchange foundation API. All money-moving endpoints require Idempotency-Key.
+  description: Exchange foundation API. All money-moving endpoints require Idempotency-Key.
 servers:
   - url: https://api.limiance.example/v1
 paths:
@@ -218,35 +218,6 @@ paths:
       responses:
         '200': { description: Audit events }
         '403': { description: Auditor role required }
-  /v2/orders:
-    get:
-      summary: List current user orders (Phase 2 stub)
-      security: [{ sessionCookie: [] }]
-      responses:
-        '200': { description: Orders list } 
-    post:
-      summary: Place an order (Phase 2 stub)
-      security: [{ sessionCookie: [] }]
-      responses:
-        '202': { description: Order accepted for matching }
-  /v2/trades:
-    get:
-      summary: List recent trades (Phase 2 stub)
-      security: [{ sessionCookie: [] }]
-      responses:
-        '200': { description: Recent trades }
-  /v2/markets:
-    get:
-      summary: List market metadata (Phase 2 stub)
-      responses:
-        '200': { description: Market metadata }
-  /v2/market/{symbol}/book:
-    get:
-      summary: Return a market order book snapshot (Phase 2 stub)
-      parameters:
-        - { name: symbol, in: path, required: true, schema: { type: string } }
-      responses:
-        '200': { description: Order book snapshot }
 components:
   headers:
     XRateLimitLimit:

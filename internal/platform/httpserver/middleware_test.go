@@ -57,6 +57,19 @@ func TestCustomerCORSAllowsConfiguredPreflightHeaders(t *testing.T) {
 	}
 }
 
+func TestCustomerCORSAllowsV2SigningHeaders(t *testing.T) {
+	handler := customerCORS(testBrowserOrigins, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("preflight reached application handler") }))
+	request := httptest.NewRequest(http.MethodOptions, "/v2/orders", nil)
+	request.Header.Set("Origin", "https://limiance-main.vercel.app")
+	request.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	request.Header.Set("Access-Control-Request-Headers", "x-api-key,x-api-timestamp,x-api-nonce,x-api-signature,idempotency-key")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+}
+
 func TestCSRFOriginCheckRejectsUntrustedUnsafeRequest(t *testing.T) {
 	handler := csrfOriginCheck(testBrowserOrigins, http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Fatal("untrusted unsafe request reached application handler")

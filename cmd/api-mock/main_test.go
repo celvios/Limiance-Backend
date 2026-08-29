@@ -1,0 +1,16 @@
+package main
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestMockServerMatchesAtomicStringContract(t *testing.T) {
+	response := httptest.NewRecorder()
+	newMockHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v2/market/orderbook/BTCUSDT", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"5000000000000"`) {
+		t.Fatalf("mock response status=%d body=%s", response.Code, response.Body.String())
+	}
+}

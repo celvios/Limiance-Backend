@@ -326,6 +326,11 @@ func (m *Manager) MarkAPIKeyUsed(ctx context.Context, keyHash []byte) error {
 	return err
 }
 
+func (m *Manager) ConsumeAPIKeyNonce(ctx context.Context, keyHash, nonceHash []byte, expiresAt time.Time) (bool, error) {
+	command, err := m.pool.Exec(ctx, `WITH purged AS (DELETE FROM api_key_nonces WHERE expires_at <= now()) INSERT INTO api_key_nonces(key_hash,nonce_hash,expires_at) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, keyHash, nonceHash, expiresAt.UTC())
+	return err == nil && command.RowsAffected() == 1, err
+}
+
 func (m *Manager) RevokeAPIKey(ctx context.Context, userID, keyID string) (bool, error) {
 	command, err := m.pool.Exec(ctx, `UPDATE api_keys SET revoked_at=now() WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL`, keyID, userID)
 	if err != nil {

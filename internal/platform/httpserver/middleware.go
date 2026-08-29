@@ -33,6 +33,10 @@ var allowedCORSHeaders = map[string]struct{}{
 	"x-geetest-captcha-output": {},
 	"x-geetest-pass-token":     {},
 	"x-geetest-gen-time":       {},
+	"x-api-key":                {},
+	"x-api-timestamp":          {},
+	"x-api-nonce":              {},
+	"x-api-signature":          {},
 }
 
 func securityHeaders(next http.Handler) http.Handler {
@@ -84,7 +88,7 @@ func customerCORS(allowedOrigins []string, next http.Handler) http.Handler {
 			return
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, X-Request-ID, X-Step-Up-Token, X-GeeTest-Lot-Number, X-GeeTest-Captcha-Output, X-GeeTest-Pass-Token, X-GeeTest-Gen-Time")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, X-Request-ID, X-Step-Up-Token, X-API-Key, X-API-Timestamp, X-API-Nonce, X-API-Signature, X-GeeTest-Lot-Number, X-GeeTest-Captcha-Output, X-GeeTest-Pass-Token, X-GeeTest-Gen-Time")
 		w.Header().Set("Access-Control-Max-Age", "600")
 		w.Header().Add("Vary", "Access-Control-Request-Method")
 		w.Header().Add("Vary", "Access-Control-Request-Headers")
@@ -162,7 +166,11 @@ func csrfOriginCheck(allowedOrigins []string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isUnsafeMethod(r.Method) {
 			if origin := r.Header.Get("Origin"); origin != "" && !isAllowedBrowserOrigin(origins, origin) {
-				writeJSON(w, http.StatusForbidden, map[string]string{"error": "origin_denied"})
+				if strings.HasPrefix(r.URL.Path, "/v2/") {
+					writeVersionedError(w, http.StatusForbidden, "ORIGIN_DENIED", "request origin is not allowed")
+				} else {
+					writeJSON(w, http.StatusForbidden, map[string]string{"error": "origin_denied"})
+				}
 				return
 			}
 		}
@@ -225,7 +233,11 @@ func recoverer(logger *slog.Logger) func(http.Handler) http.Handler {
 			defer func() {
 				if recovered := recover(); recovered != nil {
 					logger.Error("panic recovered", "panic", recovered, "stack", string(debug.Stack()))
-					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
+					if strings.HasPrefix(r.URL.Path, "/v2/") {
+						writeVersionedError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "an internal error occurred")
+					} else {
+						writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
+					}
 				}
 			}()
 			next.ServeHTTP(w, r)

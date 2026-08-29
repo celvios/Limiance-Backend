@@ -192,7 +192,7 @@ func boundedInt(raw string, fallback, minimum, maximum int) (int, bool) {
 }
 
 func marketError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
+	writeVersionedError(w, status, code, message)
 }
 
 type MarketHub struct {

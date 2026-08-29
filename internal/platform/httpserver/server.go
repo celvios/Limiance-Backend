@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/limiance/backend/internal/accounts"
@@ -55,6 +56,16 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 			}
 		}
 		feeService := fees.NewService(data, feeCache)
+		var apiLimiter endpointLimiter = unavailableEndpointLimiter{}
+		if cfg.RedisURL != "" {
+			redisLimiter, limitErr := newRedisEndpointLimiter(cfg.RedisURL)
+			if limitErr != nil {
+				logger.Error("Redis API rate limiter unavailable", "error", limitErr)
+			} else {
+				apiLimiter = redisLimiter
+				shutdownClosers = append(shutdownClosers, func() { _ = redisLimiter.Close() })
+			}
+		}
 		marketRepository := marketdata.NewPostgresStore(pool)
 		marketHub := NewMarketHub()
 		var marketCache marketdata.SnapshotCache = marketdata.NewMemoryStore()
@@ -73,13 +84,16 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 			}
 		}
 		marketV2Handler := NewMarketV2Handler(marketRepository, marketCache, marketHub, cfg.AllowedBrowserOrigins)
-		mux.HandleFunc("GET /v2/market/markets", marketV2Handler.Markets)
-		mux.HandleFunc("GET /v2/market/orderbook/{pair}", marketV2Handler.OrderBook)
-		mux.HandleFunc("GET /v2/market/ticker/{pair}", marketV2Handler.Ticker)
-		mux.HandleFunc("GET /v2/market/trades/{pair}", marketV2Handler.Trades)
-		mux.HandleFunc("GET /v2/market/klines/{pair}", marketV2Handler.Klines)
-		mux.HandleFunc("GET /v2/ws", marketV2Handler.WebSocket)
-		mux.HandleFunc("GET /ws/v2/market", marketV2Handler.WebSocket)
+		publicMarketLimit := func(handler http.HandlerFunc) http.Handler {
+			return endpointRateLimit(apiLimiter, "market.read", 1200, time.Minute, false, handler)
+		}
+		mux.Handle("GET /v2/market/markets", publicMarketLimit(marketV2Handler.Markets))
+		mux.Handle("GET /v2/market/orderbook/{pair}", publicMarketLimit(marketV2Handler.OrderBook))
+		mux.Handle("GET /v2/market/ticker/{pair}", publicMarketLimit(marketV2Handler.Ticker))
+		mux.Handle("GET /v2/market/trades/{pair}", publicMarketLimit(marketV2Handler.Trades))
+		mux.Handle("GET /v2/market/klines/{pair}", publicMarketLimit(marketV2Handler.Klines))
+		mux.Handle("GET /v2/ws", endpointRateLimit(apiLimiter, "market.websocket", 60, time.Minute, false, http.HandlerFunc(marketV2Handler.WebSocket)))
+		mux.Handle("GET /ws/v2/market", endpointRateLimit(apiLimiter, "market.websocket", 60, time.Minute, false, http.HandlerFunc(marketV2Handler.WebSocket)))
 		accountHandler := NewAccountHandler(accountService, logger)
 		profileHandler := NewProfileHandler(data, accountService)
 		captchaVerifier := geetest.New(cfg.GeeTestCaptchaID, cfg.GeeTestPrivateKey)
@@ -187,11 +201,17 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 			orderService := trading.NewService(tradingpostgres.New(pool), cachedTradingFeeResolver{service: feeService}, orderEngine).WithControlEngine(controlEngine)
 			orderHandler := NewOrderHandler(orderService, logger)
 			orderAuth := requireAccountSessionOrAPIKey(authService, data, cfg.VerificationEncryptionKey)
-			mux.Handle("POST /v2/orders", orderAuth(http.HandlerFunc(orderHandler.Place)))
-			mux.Handle("GET /v2/orders", orderAuth(http.HandlerFunc(orderHandler.List)))
-			mux.Handle("GET /v2/orders/history", orderAuth(http.HandlerFunc(orderHandler.History)))
-			mux.Handle("GET /v2/orders/{order_id}", orderAuth(http.HandlerFunc(orderHandler.Get)))
-			mux.Handle("DELETE /v2/orders/{order_id}", orderAuth(http.HandlerFunc(orderHandler.Cancel)))
+			orderReadLimit := func(handler http.HandlerFunc) http.Handler {
+				return endpointRateLimit(apiLimiter, "orders.read", 600, time.Minute, true, orderAuth(handler))
+			}
+			orderWriteLimit := func(handler http.HandlerFunc) http.Handler {
+				return endpointRateLimit(apiLimiter, "orders.write", 120, time.Minute, true, orderAuth(handler))
+			}
+			mux.Handle("POST /v2/orders", orderWriteLimit(orderHandler.Place))
+			mux.Handle("GET /v2/orders", orderReadLimit(orderHandler.List))
+			mux.Handle("GET /v2/orders/history", orderReadLimit(orderHandler.History))
+			mux.Handle("GET /v2/orders/{order_id}", orderReadLimit(orderHandler.Get))
+			mux.Handle("DELETE /v2/orders/{order_id}", orderWriteLimit(orderHandler.Cancel))
 		}
 		mux.Handle("PUT /v1/user/preferences", requireSession(authService)(http.HandlerFunc(profileHandler.Preferences)))
 		feesHandler := NewFeesHandler(feeService)
@@ -283,6 +303,9 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 		assetHandler := NewAssetHandler(assets.NewService(data), logger)
 		mux.HandleFunc("GET /v1/assets/catalog", assetHandler.Catalog)
 	}
+	mux.HandleFunc("/v2/", func(w http.ResponseWriter, _ *http.Request) {
+		writeVersionedError(w, http.StatusNotFound, "ROUTE_NOT_FOUND", "API route was not found")
+	})
 
 	handler := recoverer(logger)(requestID(logger)(metrics.Middleware(securityHeaders(customerCORS(cfg.AllowedBrowserOrigins, csrfOriginCheck(cfg.AllowedBrowserOrigins, mux))))))
 	server := &http.Server{
