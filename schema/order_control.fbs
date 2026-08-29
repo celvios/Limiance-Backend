@@ -1,0 +1,37 @@
+namespace limiance.control;
+
+table CancelOrderCommand {
+  order_id:string (required);
+  pair:string (required);
+}
+
+table ReplayRequest {
+  pair:string (required);
+  from_sequence_id:uint64;
+}
+
+table SnapshotRequest {
+  pair:string (required);
+}
+
+table ControlAck {
+  accepted:bool;
+  sequence_id:uint64;
+  reason:string;
+}
+
+union ControlPayload {
+  CancelOrderCommand,
+  ReplayRequest,
+  SnapshotRequest,
+  ControlAck
+}
+
+table ControlEnvelope {
+  command_id:string (required);
+  timestamp_ns:uint64;
+  payload:ControlPayload (required);
+}
+
+root_type ControlEnvelope;
+file_identifier "LOCT";
