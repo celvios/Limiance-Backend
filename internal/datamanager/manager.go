@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/limiance/backend/internal/platform/queue"
+	"github.com/limiance/backend/internal/pnl"
 	"github.com/limiance/backend/internal/security/password"
 )
 
@@ -1570,6 +1571,41 @@ func (m *Manager) AccountTransactionHistoryForAccount(ctx context.Context, userI
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (m *Manager) DailyPnL(ctx context.Context, userID string, days int) ([]pnl.DailyPnLEntry, error) {
+	if days <= 0 {
+		days = 30
+	}
+	rows, err := m.pool.Query(ctx, `
+		SELECT DATE(traded_at AT TIME ZONE 'UTC') AS day,
+			COALESCE(SUM(
+				CASE 
+					WHEN maker_user_id = $1 THEN -(quantity * price)
+					WHEN taker_user_id = $1 THEN (quantity * price)
+					ELSE 0
+				END
+			), 0)::text
+		FROM trades
+		WHERE (maker_user_id = $1 OR taker_user_id = $1)
+		  AND traded_at >= NOW() - ($2::int * INTERVAL '1 day')
+		GROUP BY DATE(traded_at AT TIME ZONE 'UTC')
+		ORDER BY day DESC
+		LIMIT $2`, userID, days)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	entries := make([]pnl.DailyPnLEntry, 0)
+	for rows.Next() {
+		var entry pnl.DailyPnLEntry
+		if err := rows.Scan(&entry.Date, &entry.PNLUSD); err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	return entries, rows.Err()
 }
 
 type DepositHistoryItem struct {

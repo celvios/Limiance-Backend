@@ -21,6 +21,7 @@ import (
 	"github.com/limiance/backend/internal/notifications"
 	"github.com/limiance/backend/internal/observability"
 	"github.com/limiance/backend/internal/phone"
+	"github.com/limiance/backend/internal/pnl"
 	"github.com/limiance/backend/internal/security/geetest"
 	"github.com/limiance/backend/internal/transfers"
 	"github.com/limiance/backend/internal/withdrawals"
@@ -133,7 +134,13 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 		mux.Handle("GET /v1/user/profile", requireSessionOrAPIKey(authService, data, cfg.VerificationEncryptionKey)(http.HandlerFunc(profileHandler.Get)))
 		mux.Handle("PUT /v1/user/preferences", requireSession(authService)(http.HandlerFunc(profileHandler.Preferences)))
 		feesHandler := NewFeesHandler(fees.NewService(data, nil))
+		limitsHandler := NewLimitsHandler()
+		pnlHandler := NewPnLHandler(pnl.NewService(data), logger)
 		mux.Handle("GET /v1/user/fees", requireSession(authService)(http.HandlerFunc(feesHandler.Get)))
+		mux.Handle("GET /v1/user/limits", requireSession(authService)(http.HandlerFunc(limitsHandler.Get)))
+		mux.Handle("GET /v1/user/pnl", requireSession(authService)(http.HandlerFunc(pnlHandler.Get)))
+		mux.Handle("GET /v1/user/daily-pnl", requireSession(authService)(http.HandlerFunc(pnlHandler.Get)))
+		mux.Handle("GET /v1/accounts/pnl", requireSession(authService)(http.HandlerFunc(pnlHandler.Get)))
 		var sumsubProvider kyc.SessionProvider
 		if provider, err := kyc.NewClient(kyc.ClientConfig{AppToken: cfg.SumsubAppToken, SecretKey: cfg.SumsubSecretKey, LevelName: cfg.SumsubLevelName}); err == nil {
 			sumsubProvider = provider
