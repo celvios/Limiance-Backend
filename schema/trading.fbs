@@ -1,0 +1,59 @@
+namespace limiance.trading;
+
+enum OrderSide:ubyte { BUY = 0, SELL = 1 }
+
+enum OrderType:ubyte {
+  LIMIT = 0,
+  MARKET = 1,
+  STOP_LIMIT = 2
+}
+
+enum TimeInForce:ubyte { GTC = 0, IOC = 1, FOK = 2 }
+
+enum OrderStatus:ubyte {
+  OPEN = 0,
+  PARTIAL = 1,
+  FILLED = 2,
+  CANCELED = 3,
+  REJECTED = 4
+}
+
+table OrderIngress {
+  id:string;
+  user_id:string;
+  pair:string;
+  side:OrderSide;
+  order_type:OrderType;
+  price:uint64;
+  quantity:uint64;
+  time_in_force:TimeInForce;
+  post_only:bool;
+  reduce_only:bool;
+  timestamp_ns:uint64;
+  fee_tier:ubyte;
+}
+
+table TradeEvent {
+  sequence_id:uint64;
+  timestamp_ns:uint64;
+  pair:string;
+  maker_order_id:string;
+  taker_order_id:string;
+  maker_user_id:string;
+  taker_user_id:string;
+  price:uint64;
+  quantity:uint64;
+  maker_fee_bps:short;
+  taker_fee_bps:short;
+}
+
+table OrderStatusEvent {
+  sequence_id:uint64;
+  order_id:string;
+  status:OrderStatus;
+  filled_quantity:uint64;
+  remaining_quantity:uint64;
+  avg_price:uint64;
+}
+
+root_type OrderIngress;

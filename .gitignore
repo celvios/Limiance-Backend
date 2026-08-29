@@ -10,3 +10,4 @@ coverage.out
 tmp/
 tmp-*.log
 .limiance-go-cache/
+.gocache/

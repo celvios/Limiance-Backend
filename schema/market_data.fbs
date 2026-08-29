@@ -1,0 +1,17 @@
+namespace limiance.marketdata;
+
+table OrderBookLevel {
+  price:uint64;
+  quantity:uint64;
+  order_count:uint32;
+}
+
+table OrderBookSnapshot {
+  sequence_id:uint64;
+  timestamp_ns:uint64;
+  pair:string;
+  bids:[OrderBookLevel];
+  asks:[OrderBookLevel];
+}
+
+root_type OrderBookSnapshot;
