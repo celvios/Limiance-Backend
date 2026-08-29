@@ -8,8 +8,21 @@ servers:
 paths:
   /healthz:
     get:
+      summary: Health check
       responses:
-        '200': { description: Process is healthy }
+        '200':
+          description: Process is healthy
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
   /auth/register:
     post:
       summary: Register an account
@@ -205,7 +218,46 @@ paths:
       responses:
         '200': { description: Audit events }
         '403': { description: Auditor role required }
+  /v2/orders:
+    get:
+      summary: List current user orders (Phase 2 stub)
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: Orders list } 
+    post:
+      summary: Place an order (Phase 2 stub)
+      security: [{ sessionCookie: [] }]
+      responses:
+        '202': { description: Order accepted for matching }
+  /v2/trades:
+    get:
+      summary: List recent trades (Phase 2 stub)
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: Recent trades }
+  /v2/markets:
+    get:
+      summary: List market metadata (Phase 2 stub)
+      responses:
+        '200': { description: Market metadata }
+  /v2/market/{symbol}/book:
+    get:
+      summary: Return a market order book snapshot (Phase 2 stub)
+      parameters:
+        - { name: symbol, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Order book snapshot }
 components:
+  headers:
+    XRateLimitLimit:
+      description: Maximum number of requests allowed in the current window.
+      schema: { type: integer, format: int32 }
+    XRateLimitRemaining:
+      description: Remaining requests in the current window.
+      schema: { type: integer, format: int32 }
+    XRateLimitReset:
+      description: Unix time when the quota resets.
+      schema: { type: integer, format: int64 }
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
@@ -227,6 +279,25 @@ components:
       name: X-API-Key
       description: Use X-API-Timestamp and X-API-Signature. Sign timestamp + HTTP method + URL escaped path + raw body with the decrypted secret.
   schemas:
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [ok] }
+    ErrorDetails:
+      type: object
+      additionalProperties: true
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: { $ref: '#/components/schemas/ErrorDetails' }
     CatalogItem:
       type: object
       required: [code, display_name, status]
@@ -277,3 +348,7 @@ components:
         unread_count: { type: integer, format: int64 }
         limit: { type: integer }
         has_more: { type: boolean }
+    ErrorResponse:
+      type: object
+      description: Standard API error envelope.
+      $ref: '#/components/schemas/ApiError'

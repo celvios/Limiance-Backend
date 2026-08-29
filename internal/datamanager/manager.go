@@ -2861,7 +2861,7 @@ func (r sessionRepository) Revoke(ctx context.Context, sessionID string) error {
 type kycRepository struct{ tx pgx.Tx }
 
 func (r kycRepository) Start(ctx context.Context, userID, applicantID, levelName string) error {
-	_, err := r.tx.Exec(ctx, `INSERT INTO kyc_profiles (user_id, provider, applicant_id, level_name, status) VALUES ($1, 'sumsub', $2, $3, 'pending') ON CONFLICT (user_id) DO UPDATE SET applicant_id = EXCLUDED.applicant_id, level_name = EXCLUDED.level_name, status = 'pending', updated_at = now() WHERE kyc_profiles.status IN ('not_started', 'pending', 'on_hold')`, userID, applicantID, levelName)
+	_, err := r.tx.Exec(ctx, `INSERT INTO kyc_profiles (user_id, provider, applicant_id, level_name, status) VALUES ($1, 'sumsub', $2, $3, 'pending') ON CONFLICT (user_id) DO UPDATE SET applicant_id = EXCLUDED.applicant_id, level_name = EXCLUDED.level_name, status = 'pending', updated_at = now() WHERE kyc_profiles.status IN ('not_started', 'pending', 'on_hold', 'approved') AND COALESCE(kyc_profiles.tier, 0) < 2`, userID, applicantID, levelName)
 	return err
 }
 

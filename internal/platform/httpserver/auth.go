@@ -387,7 +387,13 @@ func (h *AuthHandler) Session(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user_id": principal.UserID, "uid": principal.UID, "email": principal.Email})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user_id":             principal.UserID,
+		"uid":                 principal.UID,
+		"email":               principal.Email,
+		"active_account_id":   principal.ActiveAccountID,
+		"active_account_kind": principal.ActiveAccountKind,
+	})
 }
 
 func (h *AuthHandler) Sessions(w http.ResponseWriter, r *http.Request) {

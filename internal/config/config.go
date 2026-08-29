@@ -18,6 +18,7 @@ type Config struct {
 	HTTPAddress               string
 	AllowedBrowserOrigins     []string
 	DatabaseURL               string
+	RedisURL                  string
 	SumsubWebhookKey          string
 	SumsubAppToken            string
 	SumsubSecretKey           string
@@ -78,6 +79,7 @@ func Load() Config {
 		HTTPAddress:           value("HTTP_ADDRESS", ":8080"),
 		AllowedBrowserOrigins: originList(os.Getenv("CORS_ALLOWED_ORIGINS")),
 		DatabaseURL:           databaseURL(),
+		RedisURL:              strings.TrimSpace(os.Getenv("REDIS_URL")),
 		SumsubWebhookKey:      strings.TrimSpace(os.Getenv("SUMSUB_WEBHOOK_SECRET")),
 		SumsubAppToken:        strings.TrimSpace(os.Getenv("SUMSUB_APP_TOKEN")),
 		SumsubSecretKey:       strings.TrimSpace(os.Getenv("SUMSUB_SECRET_KEY")),

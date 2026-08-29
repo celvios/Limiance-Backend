@@ -208,6 +208,73 @@ func TestTradeSettlementIsBalancedIdempotentAndReplaySafe(t *testing.T) {
 	}
 }
 
+func TestTradeSettlementCreditsMakerRebateExactlyOnce(t *testing.T) {
+	databaseURL := os.Getenv("LIMIANCE_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set LIMIANCE_TEST_DATABASE_URL to run PostgreSQL maker rebate tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	defer pool.Close()
+	fixture := fmt.Sprintf("rebate-%d", time.Now().UnixNano())
+	ids := createSettlementFixture(t, ctx, pool, fixture)
+	defer func() { cleanupSettlementFixture(pool, fixture, ids) }()
+	store := tradingpostgres.New(pool)
+	buyerOrderID := databaseUUID(t, ctx, pool)
+	buyerHash := sha256.Sum256([]byte("rebate-buyer"))
+	if _, err = store.CreateOrder(ctx, trading.CreateOrderCommand{
+		OrderID: buyerOrderID, UserID: ids.buyerUserID, AccountID: ids.buyerAccountID, Pair: ids.pair, Side: "BUY", Type: "LIMIT",
+		Price: 5000000000000, Quantity: 1000000, TimeInForce: "GTC", FeeTier: 5, IdempotencyKey: fixture + "-buyer",
+		RequestHash: buyerHash, HoldAmount: "50050000000", EnginePayload: []byte{1},
+	}); err != nil {
+		t.Fatalf("create rebate maker order: %v", err)
+	}
+	sellerOrderID := databaseUUID(t, ctx, pool)
+	sellerHash := sha256.Sum256([]byte("rebate-seller"))
+	if _, err = store.CreateOrder(ctx, trading.CreateOrderCommand{
+		OrderID: sellerOrderID, UserID: ids.sellerUserID, AccountID: ids.sellerAccountID, Pair: ids.pair, Side: "SELL", Type: "MARKET",
+		Quantity: 1000000, TimeInForce: "IOC", FeeTier: 0, IdempotencyKey: fixture + "-seller",
+		RequestHash: sellerHash, HoldAmount: "1000000", EnginePayload: []byte{1},
+	}); err != nil {
+		t.Fatalf("create rebate taker order: %v", err)
+	}
+	ids.orderIDs = []string{buyerOrderID, sellerOrderID}
+	event := protocol.TradeEvent{
+		SequenceID: 1, TimestampNS: 1724880000000000000, Pair: ids.pair,
+		MakerOrderID: buyerOrderID, TakerOrderID: sellerOrderID, MakerUserID: ids.buyerUserID, TakerUserID: ids.sellerUserID,
+		Price: 5000000000000, Quantity: 1000000, MakerFeeBPS: -4, TakerFeeBPS: 10,
+	}
+	payload, err := protocol.EncodeTradeEvent(event)
+	if err != nil {
+		t.Fatalf("encode rebate event: %v", err)
+	}
+	settled, err := store.SettleTrade(ctx, event, sha256.Sum256(payload))
+	if err != nil || settled.MakerFeeAtomic != "-20000000" || settled.TakerFeeAtomic != "50000000" {
+		t.Fatalf("settle maker rebate: trade=%+v err=%v", settled, err)
+	}
+	replayed, err := store.SettleTrade(ctx, event, sha256.Sum256(payload))
+	if err != nil || !replayed.Duplicate || replayed.ID != settled.ID {
+		t.Fatalf("replay maker rebate: trade=%+v err=%v", replayed, err)
+	}
+	assertSettlementBalance(t, ctx, pool, ids.buyerAccountID, ids.quoteAssetID, "available", 150020000000)
+	assertSettlementBalance(t, ctx, pool, ids.buyerAccountID, ids.quoteAssetID, "held", 0)
+	assertSettlementBalance(t, ctx, pool, ids.sellerAccountID, ids.quoteAssetID, "available", 49950000000)
+	var feeAccountID string
+	if err = pool.QueryRow(ctx, `SELECT account_id::text FROM trading_fee_accounts WHERE asset_id=$1`, ids.quoteAssetID).Scan(&feeAccountID); err != nil {
+		t.Fatalf("find rebate fee account: %v", err)
+	}
+	ids.feeAccountID = feeAccountID
+	assertSettlementBalance(t, ctx, pool, feeAccountID, ids.quoteAssetID, "available", 30000000)
+	var makerAccrual string
+	if err = pool.QueryRow(ctx, `SELECT amount_atomic::text FROM trade_fee_accruals WHERE trade_id=$1 AND order_id=$2`, settled.ID, buyerOrderID).Scan(&makerAccrual); err != nil || makerAccrual != "-20000000" {
+		t.Fatalf("maker rebate accrual mismatch: amount=%q err=%v", makerAccrual, err)
+	}
+}
+
 type settlementFixture struct {
 	pair                                                       string
 	buyerUserID, sellerUserID, buyerAccountID, sellerAccountID string

@@ -72,6 +72,16 @@ func NewSessionService(data *datamanager.Manager, provider SessionProvider, leve
 	return &SessionService{data: data, provider: provider, levelName: levelName}
 }
 
+func canStartKYCSession(status string, tier int16) bool {
+	if status == "active" {
+		return true
+	}
+	if status == string(Approved) {
+		return tier < 2
+	}
+	return status == "not_started" || status == string(Pending) || status == string(OnHold) || status == string(Rejected)
+}
+
 func (s *SessionService) Create(ctx context.Context, userID string) (Session, error) {
 	if s.provider == nil || s.levelName == "" {
 		return Session{}, ErrNotConfigured
@@ -83,9 +93,12 @@ func (s *SessionService) Create(ctx context.Context, userID string) (Session, er
 	if user.Status != "active" {
 		return Session{}, ErrAccountNotActive
 	}
-	// Allow re-verification for users to upgrade from Level 1 to Level 2
-	// Only block if already at Level 2 or higher
+	// Allow re-verification for users to upgrade from Level 1 to Level 2.
+	// Only block if already at Level 2 or higher.
 	if user.KYCStatus == string(Approved) && user.KYCTier >= 2 {
+		return Session{}, ErrAlreadyApproved
+	}
+	if !canStartKYCSession(user.KYCStatus, user.KYCTier) {
 		return Session{}, ErrAlreadyApproved
 	}
 	externalUserID := "limiance-" + user.ID

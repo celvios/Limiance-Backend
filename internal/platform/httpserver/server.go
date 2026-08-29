@@ -43,6 +43,16 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 			mux.HandleFunc("POST /v1/webhooks/fireblocks", fireblocksWebhook(verifier, data))
 		}
 		accountService := accounts.NewService(data, cfg.VerificationPepper, cfg.VerificationEncryptionKey)
+		var feeCache fees.Cache
+		if cfg.RedisURL != "" {
+			redisFeeCache, cacheErr := fees.NewRedisCache(cfg.RedisURL)
+			if cacheErr != nil {
+				logger.Error("Redis fee cache disabled", "error", cacheErr)
+			} else {
+				feeCache = redisFeeCache
+			}
+		}
+		feeService := fees.NewService(data, feeCache)
 		accountHandler := NewAccountHandler(accountService, logger)
 		profileHandler := NewProfileHandler(data, accountService)
 		captchaVerifier := geetest.New(cfg.GeeTestCaptchaID, cfg.GeeTestPrivateKey)
@@ -147,7 +157,7 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 				_ = controlEngine.Close()
 			}
 		} else {
-			orderService := trading.NewService(tradingpostgres.New(pool), cachedTradingFeeResolver{service: fees.NewService(data, nil)}, orderEngine).WithControlEngine(controlEngine)
+			orderService := trading.NewService(tradingpostgres.New(pool), cachedTradingFeeResolver{service: feeService}, orderEngine).WithControlEngine(controlEngine)
 			orderHandler := NewOrderHandler(orderService, logger)
 			orderAuth := requireAccountSessionOrAPIKey(authService, data, cfg.VerificationEncryptionKey)
 			mux.Handle("POST /v2/orders", orderAuth(http.HandlerFunc(orderHandler.Place)))
@@ -157,7 +167,7 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 			mux.Handle("DELETE /v2/orders/{order_id}", orderAuth(http.HandlerFunc(orderHandler.Cancel)))
 		}
 		mux.Handle("PUT /v1/user/preferences", requireSession(authService)(http.HandlerFunc(profileHandler.Preferences)))
-		feesHandler := NewFeesHandler(fees.NewService(data, nil))
+		feesHandler := NewFeesHandler(feeService)
 		limitsHandler := NewLimitsHandler(data)
 		pnlHandler := NewPnLHandler(pnl.NewService(data), logger)
 		mux.Handle("GET /v1/user/fees", requireSession(authService)(http.HandlerFunc(feesHandler.Get)))

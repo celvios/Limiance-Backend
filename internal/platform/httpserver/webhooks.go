@@ -60,7 +60,7 @@ func sumsubWebhook(secret string, data *datamanager.Manager, statusService *kyc.
 						to = kyc.Pending
 					}
 					if from != to {
-						_ = statusService.Transition(r.Context(), user.ID, from, to, tierForStatus(to), "sumsub", event.ApplicantID)
+						_ = statusService.Transition(r.Context(), user.ID, from, to, tierForStatus(to, user.KYCTier), "sumsub", event.ApplicantID)
 					}
 				}
 			}
@@ -70,8 +70,11 @@ func sumsubWebhook(secret string, data *datamanager.Manager, statusService *kyc.
 	}
 }
 
-func tierForStatus(status kyc.Status) int16 {
+func tierForStatus(status kyc.Status, currentTier int16) int16 {
 	if status == kyc.Approved {
+		if currentTier >= 1 {
+			return 2
+		}
 		return 1
 	}
 	return 0

@@ -15,6 +15,15 @@ type UserFees struct {
 	VolumeUSD   string `json:"volume_usd"`
 }
 
+type FeePolicyInput struct {
+	ActorID       string
+	TierLevel     int
+	MakerFeeBPS   int
+	TakerFeeBPS   int
+	MinimumVolume string
+	Reason        string
+}
+
 func (m *Manager) UserFees(ctx context.Context, userID string) (UserFees, error) {
 	var fees UserFees
 	err := m.pool.QueryRow(ctx, `
@@ -50,10 +59,49 @@ func (m *Manager) RefreshUserFeeTiers(ctx context.Context) error {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `
+		WITH resolved AS (
+			SELECT u.id AS user_id,COALESCE(ft.tier_level,0) AS previous_tier,
+			       COALESCE((SELECT MAX(t.level) FROM vip_tiers t WHERE t.min_30d_volume <= COALESCE(v.volume_usd,0)),0) AS new_tier,
+			       COALESCE(v.volume_usd,0) AS volume
+			FROM users u
+			LEFT JOIN user_fee_tier ft ON ft.user_id=u.id
+			LEFT JOIN user_volume_30d v ON v.user_id=u.id
+		)
+		INSERT INTO fee_tier_audit_history(user_id,previous_tier_level,new_tier_level,rolling_volume_usd)
+		SELECT user_id,previous_tier,new_tier,volume FROM resolved WHERE previous_tier<>new_tier`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO user_fee_tier (user_id,tier_level,updated_at)
 		SELECT u.id,COALESCE((SELECT MAX(t.level) FROM vip_tiers t WHERE t.min_30d_volume <= COALESCE(v.volume_usd,0)),0),NOW()
 		FROM users u LEFT JOIN user_volume_30d v ON v.user_id=u.id
 		ON CONFLICT (user_id) DO UPDATE SET tier_level=EXCLUDED.tier_level,updated_at=NOW()`); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (m *Manager) UpdateFeePolicy(ctx context.Context, input FeePolicyInput) error {
+	if input.TierLevel < 0 || input.MakerFeeBPS < -10000 || input.MakerFeeBPS > 10000 || input.TakerFeeBPS < 0 || input.TakerFeeBPS > 10000 || input.MinimumVolume == "" || input.Reason == "" {
+		return pgx.ErrNoRows
+	}
+	tx, err := m.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	command, err := tx.Exec(ctx, `UPDATE vip_tiers SET maker_fee_bps=$2,taker_fee_bps=$3,min_30d_volume=$4::numeric WHERE level=$1`, input.TierLevel, input.MakerFeeBPS, input.TakerFeeBPS, input.MinimumVolume)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() != 1 {
+		return pgx.ErrNoRows
+	}
+	var actor any
+	if input.ActorID != "" {
+		actor = input.ActorID
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO fee_policy_audit_history(tier_level,actor_id,maker_fee_bps,taker_fee_bps,min_30d_volume,reason) VALUES($1,$2,$3,$4,$5::numeric,$6)`, input.TierLevel, actor, input.MakerFeeBPS, input.TakerFeeBPS, input.MinimumVolume, input.Reason); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

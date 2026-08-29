@@ -14,9 +14,11 @@ var uuidPathWithSlash = regexp.MustCompile(`/[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}/`)
 var uuidPathAtEnd = regexp.MustCompile(`/[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}$`)
 
 type Metrics struct {
-	Requests *prometheus.CounterVec
-	Duration *prometheus.HistogramVec
-	registry *prometheus.Registry
+	Requests       *prometheus.CounterVec
+	Duration       *prometheus.HistogramVec
+	Errors         *prometheus.CounterVec
+	WebhookReceipts *prometheus.CounterVec
+	registry       *prometheus.Registry
 }
 
 func NewMetrics() *Metrics {
@@ -24,9 +26,11 @@ func NewMetrics() *Metrics {
 	metrics := &Metrics{
 		Requests: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "limiance_http_requests_total", Help: "Total HTTP requests handled by the API."}, []string{"method", "path", "status"}),
 		Duration: prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "limiance_http_request_duration_seconds", Help: "HTTP request duration in seconds.", Buckets: prometheus.DefBuckets}, []string{"method", "path"}),
+		Errors: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "limiance_http_errors_total", Help: "Total HTTP errors emitted by the API."}, []string{"method", "path", "status"}),
+		WebhookReceipts: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "limiance_webhook_receipts_total", Help: "Webhook receipt count by provider and result."}, []string{"provider", "status"}),
 		registry: registry,
 	}
-	registry.MustRegister(metrics.Requests, metrics.Duration)
+	registry.MustRegister(metrics.Requests, metrics.Duration, metrics.Errors, metrics.WebhookReceipts)
 	return metrics
 }
 
@@ -40,9 +44,17 @@ func (m *Metrics) Middleware(next http.Handler) http.Handler {
 		writer := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(writer, r)
 		path := normalizePath(r.URL.Path)
-		m.Requests.WithLabelValues(r.Method, path, strconv.Itoa(writer.status)).Inc()
+		status := strconv.Itoa(writer.status)
+		m.Requests.WithLabelValues(r.Method, path, status).Inc()
 		m.Duration.WithLabelValues(r.Method, path).Observe(time.Since(started).Seconds())
+		if writer.status >= http.StatusBadRequest {
+			m.Errors.WithLabelValues(r.Method, path, status).Inc()
+		}
 	})
+}
+
+func (m *Metrics) RecordWebhookReceipt(provider, status string) {
+	m.WebhookReceipts.WithLabelValues(provider, status).Inc()
 }
 
 func normalizePath(path string) string {
