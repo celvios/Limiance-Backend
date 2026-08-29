@@ -154,6 +154,22 @@ func (h *AccountHandler) SubaccountDetails(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, item)
 }
 
+func subaccountLifecycleAction(r *http.Request) string {
+	switch r.Method {
+	case http.MethodDelete:
+		return "deleted"
+	case http.MethodPost:
+		action := strings.Trim(strings.TrimSpace(r.URL.Path), "/")
+		if strings.HasSuffix(action, "/freeze") {
+			return "freeze"
+		}
+		if strings.HasSuffix(action, "/unfreeze") {
+			return "unfreeze"
+		}
+	}
+	return ""
+}
+
 func (h *AccountHandler) SubaccountLifecycle(w http.ResponseWriter, r *http.Request) {
 	principal, ok := principalFromContext(r)
 	if !ok {
@@ -161,15 +177,13 @@ func (h *AccountHandler) SubaccountLifecycle(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	status := ""
-	switch r.Method {
-	case http.MethodDelete:
+	switch subaccountLifecycleAction(r) {
+	case "deleted":
 		status = "deleted"
-	case http.MethodPost:
-		if r.PathValue("action") == "freeze" {
-			status = "frozen"
-		} else if r.PathValue("action") == "unfreeze" {
-			status = "active"
-		}
+	case "freeze":
+		status = "frozen"
+	case "unfreeze":
+		status = "active"
 	}
 	if status == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_subaccount_action"})
