@@ -647,7 +647,7 @@ func (m *Manager) ClearAntiPhishingCode(ctx context.Context, userID string) erro
 
 func (m *Manager) KYCSessionUser(ctx context.Context, userID string) (KYCUser, error) {
 	var user KYCUser
-	err := m.pool.QueryRow(ctx, `SELECT u.id::text, u.email, u.status, COALESCE(k.applicant_id, ''), COALESCE(k.status::text, 'not_started') FROM users u LEFT JOIN kyc_profiles k ON k.user_id = u.id WHERE u.id = $1`, userID).Scan(&user.ID, &user.Email, &user.Status, &user.ApplicantID, &user.KYCStatus)
+	err := m.pool.QueryRow(ctx, `SELECT u.id::text, u.email, u.status, COALESCE(k.applicant_id, ''), COALESCE(k.status::text, 'not_started'), COALESCE(k.tier, 0) FROM users u LEFT JOIN kyc_profiles k ON k.user_id = u.id WHERE u.id = $1`, userID).Scan(&user.ID, &user.Email, &user.Status, &user.ApplicantID, &user.KYCStatus, &user.KYCTier)
 	return user, err
 }
 
@@ -830,6 +830,7 @@ type KYCUser struct {
 	Status      string
 	ApplicantID string
 	KYCStatus   string
+	KYCTier     int16
 }
 
 func (m *Manager) KYCUserByApplicant(ctx context.Context, applicantID string) (KYCUser, error) {

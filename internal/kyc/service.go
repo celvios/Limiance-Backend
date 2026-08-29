@@ -83,7 +83,9 @@ func (s *SessionService) Create(ctx context.Context, userID string) (Session, er
 	if user.Status != "active" {
 		return Session{}, ErrAccountNotActive
 	}
-	if user.KYCStatus == string(Approved) {
+	// Allow re-verification for users to upgrade from Level 1 to Level 2
+	// Only block if already at Level 2 or higher
+	if user.KYCStatus == string(Approved) && user.KYCTier >= 2 {
 		return Session{}, ErrAlreadyApproved
 	}
 	externalUserID := "limiance-" + user.ID
