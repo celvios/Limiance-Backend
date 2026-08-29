@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/limiance/backend/internal/ledger"
 )
 
 var ErrConversionPairUnavailable = errors.New("conversion pair unavailable")
@@ -281,10 +282,16 @@ func (m *Manager) ConfirmConversion(ctx context.Context, userID, quoteID, idempo
 			return ConversionResult{}, err
 		}
 	}
-	locks := []string{sourceID + ":" + fromID, treasuryFrom + ":" + fromID, treasuryTo + ":" + toID}
-	sort.Strings(locks)
+	locks := []struct{ accountID, assetID string }{
+		{sourceID, fromID},
+		{treasuryFrom, fromID},
+		{treasuryTo, toID},
+	}
+	sort.Slice(locks, func(i, j int) bool {
+		return ledger.AccountAssetLockKey(locks[i].accountID, locks[i].assetID) < ledger.AccountAssetLockKey(locks[j].accountID, locks[j].assetID)
+	})
 	for _, lock := range locks {
-		if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, lock); err != nil {
+		if err = ledger.LockAccountAsset(ctx, tx, lock.accountID, lock.assetID); err != nil {
 			return ConversionResult{}, err
 		}
 	}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/limiance/backend/internal/ledger"
 	"github.com/limiance/backend/internal/platform/queue"
 	"github.com/limiance/backend/internal/pnl"
 	"github.com/limiance/backend/internal/security/password"
@@ -973,7 +974,7 @@ func (m *Manager) CreateInternalTransfer(ctx context.Context, input TransferInpu
 
 	// Serialise balance-changing commands for this account/asset pair. Postings
 	// remain immutable; this only prevents two concurrent debits overspending.
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, input.SourceAccountID+":"+assetID); err != nil {
+	if err = ledger.LockAccountAsset(ctx, tx, input.SourceAccountID, assetID); err != nil {
 		return TransferResult{}, err
 	}
 	var available int64
@@ -2469,7 +2470,7 @@ func (m *Manager) RequestWithdrawal(ctx context.Context, input WithdrawalInput) 
 	if accountKind == "subaccount" {
 		return WithdrawalResult{}, ErrWithdrawalAccountUnavailable
 	}
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, input.SourceAccountID+":"+assetID); err != nil {
+	if err = ledger.LockAccountAsset(ctx, tx, input.SourceAccountID, assetID); err != nil {
 		return WithdrawalResult{}, err
 	}
 	var available int64
@@ -2671,7 +2672,7 @@ func (m *Manager) CancelWithdrawal(ctx context.Context, userID, withdrawalID str
 	if status != "pending_approval" {
 		return WithdrawalCancellationResult{}, ErrWithdrawalNotCancellable
 	}
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, accountID+":"+assetID); err != nil {
+	if err = ledger.LockAccountAsset(ctx, tx, accountID, assetID); err != nil {
 		return WithdrawalCancellationResult{}, err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE withdrawals SET status='cancelled',updated_at=now() WHERE id=$1 AND status='pending_approval'`, withdrawalID); err != nil {
