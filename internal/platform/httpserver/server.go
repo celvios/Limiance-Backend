@@ -32,6 +32,8 @@ import (
 
 func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http.Server {
 	mux := http.NewServeMux()
+	backgroundContext, stopBackground := context.WithCancel(context.Background())
+	var shutdownClosers []func()
 	metrics := observability.NewMetrics()
 	mux.Handle("GET /metrics", metrics.Handler())
 	mux.HandleFunc("GET /healthz", health)
@@ -53,6 +55,31 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 			}
 		}
 		feeService := fees.NewService(data, feeCache)
+		marketRepository := marketdata.NewPostgresStore(pool)
+		marketHub := NewMarketHub()
+		var marketCache marketdata.SnapshotCache = marketdata.NewMemoryStore()
+		if cfg.RedisURL != "" {
+			redisMarketStore, marketErr := marketdata.NewRedisStore(cfg.RedisURL)
+			if marketErr != nil {
+				logger.Error("Redis market data disabled", "error", marketErr)
+			} else {
+				marketCache = redisMarketStore
+				shutdownClosers = append(shutdownClosers, func() { _ = redisMarketStore.Close() })
+				go func() {
+					if err := redisMarketStore.Subscribe(backgroundContext, marketHub.Publish); err != nil && backgroundContext.Err() == nil {
+						logger.Error("market data Redis subscription stopped", "error", err)
+					}
+				}()
+			}
+		}
+		marketV2Handler := NewMarketV2Handler(marketRepository, marketCache, marketHub, cfg.AllowedBrowserOrigins)
+		mux.HandleFunc("GET /v2/market/markets", marketV2Handler.Markets)
+		mux.HandleFunc("GET /v2/market/orderbook/{pair}", marketV2Handler.OrderBook)
+		mux.HandleFunc("GET /v2/market/ticker/{pair}", marketV2Handler.Ticker)
+		mux.HandleFunc("GET /v2/market/trades/{pair}", marketV2Handler.Trades)
+		mux.HandleFunc("GET /v2/market/klines/{pair}", marketV2Handler.Klines)
+		mux.HandleFunc("GET /v2/ws", marketV2Handler.WebSocket)
+		mux.HandleFunc("GET /ws/v2/market", marketV2Handler.WebSocket)
 		accountHandler := NewAccountHandler(accountService, logger)
 		profileHandler := NewProfileHandler(data, accountService)
 		captchaVerifier := geetest.New(cfg.GeeTestCaptchaID, cfg.GeeTestPrivateKey)
@@ -258,7 +285,7 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 	}
 
 	handler := recoverer(logger)(requestID(logger)(metrics.Middleware(securityHeaders(customerCORS(cfg.AllowedBrowserOrigins, csrfOriginCheck(cfg.AllowedBrowserOrigins, mux))))))
-	return &http.Server{
+	server := &http.Server{
 		Addr:              cfg.HTTPAddress,
 		Handler:           handler,
 		ReadTimeout:       cfg.ReadTimeout,
@@ -267,4 +294,11 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 		IdleTimeout:       cfg.IdleTimeout,
 		MaxHeaderBytes:    16 << 10,
 	}
+	server.RegisterOnShutdown(func() {
+		stopBackground()
+		for _, closeResource := range shutdownClosers {
+			closeResource()
+		}
+	})
+	return server
 }

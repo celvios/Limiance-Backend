@@ -11,6 +11,7 @@ require (
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/go-zeromq/zmq4 v0.17.0
 	github.com/google/flatbuffers v25.12.19+incompatible
+	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/go-redis/v9 v9.22.0

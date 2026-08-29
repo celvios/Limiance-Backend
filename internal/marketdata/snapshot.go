@@ -2,6 +2,7 @@ package marketdata
 
 import (
 	"fmt"
+	"strconv"
 
 	flatbuffers "github.com/google/flatbuffers/go"
 	marketdatawire "github.com/limiance/backend/internal/marketdata/wire/marketdatawire"
@@ -13,17 +14,37 @@ const (
 )
 
 type OrderBookLevel struct {
-	Price      uint64
-	Quantity   uint64
-	OrderCount uint32
+	Price      uint64 `json:"price"`
+	Quantity   uint64 `json:"quantity"`
+	OrderCount uint32 `json:"order_count"`
 }
 
 type OrderBookSnapshot struct {
-	SequenceID  uint64
-	TimestampNS uint64
-	Pair        string
-	Bids        []OrderBookLevel
-	Asks        []OrderBookLevel
+	SequenceID  uint64           `json:"sequence_id"`
+	TimestampNS uint64           `json:"timestamp_ns"`
+	Pair        string           `json:"pair"`
+	Bids        []OrderBookLevel `json:"bids"`
+	Asks        []OrderBookLevel `json:"asks"`
+}
+
+type PublicOrderBookSnapshot struct {
+	SequenceID  uint64     `json:"sequence_id"`
+	TimestampNS uint64     `json:"timestamp_ns"`
+	Pair        string     `json:"pair"`
+	Bids        [][]string `json:"bids"`
+	Asks        [][]string `json:"asks"`
+}
+
+func (snapshot OrderBookSnapshot) Public() PublicOrderBookSnapshot {
+	return PublicOrderBookSnapshot{SequenceID: snapshot.SequenceID, TimestampNS: snapshot.TimestampNS, Pair: snapshot.Pair, Bids: publicLevels(snapshot.Bids), Asks: publicLevels(snapshot.Asks)}
+}
+
+func publicLevels(levels []OrderBookLevel) [][]string {
+	result := make([][]string, len(levels))
+	for index, level := range levels {
+		result[index] = []string{strconv.FormatUint(level.Price, 10), strconv.FormatUint(level.Quantity, 10), strconv.FormatUint(uint64(level.OrderCount), 10)}
+	}
+	return result
 }
 
 func (snapshot OrderBookSnapshot) Validate() error {
@@ -42,6 +63,19 @@ func (snapshot OrderBookSnapshot) Validate() error {
 				return fmt.Errorf("order book levels require positive price, quantity, and order count")
 			}
 		}
+	}
+	for i := 1; i < len(snapshot.Bids); i++ {
+		if snapshot.Bids[i-1].Price <= snapshot.Bids[i].Price {
+			return fmt.Errorf("order book bids must be strictly descending")
+		}
+	}
+	for i := 1; i < len(snapshot.Asks); i++ {
+		if snapshot.Asks[i-1].Price >= snapshot.Asks[i].Price {
+			return fmt.Errorf("order book asks must be strictly ascending")
+		}
+	}
+	if len(snapshot.Bids) > 0 && len(snapshot.Asks) > 0 && snapshot.Bids[0].Price >= snapshot.Asks[0].Price {
+		return fmt.Errorf("order book snapshot is crossed")
 	}
 	return nil
 }
