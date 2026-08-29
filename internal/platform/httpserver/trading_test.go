@@ -16,12 +16,29 @@ import (
 
 type orderPlacementStub struct {
 	result trading.Order
+	orders []trading.Order
 	err    error
 	input  trading.PlaceOrderInput
+	filter trading.OrderFilter
+	cancel trading.CancelOrderInput
 }
 
 func (stub *orderPlacementStub) PlaceOrder(_ context.Context, input trading.PlaceOrderInput) (trading.Order, error) {
 	stub.input = input
+	return stub.result, stub.err
+}
+
+func (stub *orderPlacementStub) ListOrders(_ context.Context, _, _ string, filter trading.OrderFilter) ([]trading.Order, error) {
+	stub.filter = filter
+	return stub.orders, stub.err
+}
+
+func (stub *orderPlacementStub) GetOrder(_ context.Context, _, _, _ string) (trading.Order, error) {
+	return stub.result, stub.err
+}
+
+func (stub *orderPlacementStub) CancelOrder(_ context.Context, input trading.CancelOrderInput) (trading.Order, error) {
+	stub.cancel = input
 	return stub.result, stub.err
 }
 
@@ -70,7 +87,7 @@ func TestOrderLifecyclePlaceOrder(t *testing.T) {
 		request := authenticatedOrderRequest(validOrderJSON(), auth.Principal{UserID: "user-1", ActiveAccountID: "account-1", ActiveAccountKind: "uta", PrincipalType: "api_key", APIKeyScope: "read_only"})
 		response := httptest.NewRecorder()
 		handler.Place(response, request)
-		assertErrorCode(t, response, http.StatusForbidden, "API_KEY_SCOPE_FORBIDDEN")
+		assertErrorCode(t, response, http.StatusForbidden, "INSUFFICIENT_SCOPE")
 	})
 
 	t.Run("maps insufficient balance", func(t *testing.T) {
@@ -88,6 +105,74 @@ func TestOrderLifecyclePlaceOrder(t *testing.T) {
 		handler.Place(response, request)
 		assertErrorCode(t, response, http.StatusBadRequest, "INVALID_REQUEST")
 	})
+}
+
+func TestOrderLifecycleReadAndCancel(t *testing.T) {
+	principal := auth.Principal{UserID: "user-1", ActiveAccountID: "account-1", ActiveAccountKind: "uta", PrincipalType: "session"}
+
+	t.Run("lists only requested open orders", func(t *testing.T) {
+		service := &orderPlacementStub{orders: []trading.Order{{ID: "order-1", Status: "OPEN"}}}
+		handler := NewOrderHandler(service, slog.Default())
+		request := httptest.NewRequest(http.MethodGet, "/v2/orders?status=OPEN&limit=20", nil)
+		request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, principal))
+		response := httptest.NewRecorder()
+		handler.List(response, request)
+		if response.Code != http.StatusOK || service.filter.Status != "OPEN" || service.filter.Limit != 20 {
+			t.Fatalf("unexpected list result: status=%d filter=%#v body=%s", response.Code, service.filter, response.Body.String())
+		}
+	})
+
+	t.Run("returns order details", func(t *testing.T) {
+		service := &orderPlacementStub{result: trading.Order{ID: "order-1", Status: "PARTIALLY_FILLED", FilledQuantity: "5", RemainingQuantity: "5", AvgPrice: "100"}}
+		handler := NewOrderHandler(service, slog.Default())
+		request := httptest.NewRequest(http.MethodGet, "/v2/orders/order-1", nil)
+		request.SetPathValue("order_id", "order-1")
+		request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, principal))
+		response := httptest.NewRecorder()
+		handler.Get(response, request)
+		if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"filled_quantity":"5"`)) {
+			t.Fatalf("unexpected get result: status=%d body=%s", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("cancels with idempotency", func(t *testing.T) {
+		service := &orderPlacementStub{result: trading.Order{ID: "order-1", Status: "CANCELED"}}
+		handler := NewOrderHandler(service, slog.Default())
+		request := httptest.NewRequest(http.MethodDelete, "/v2/orders/order-1", nil)
+		request.SetPathValue("order_id", "order-1")
+		request.Header.Set("Idempotency-Key", "cancel-1")
+		request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, principal))
+		response := httptest.NewRecorder()
+		handler.Cancel(response, request)
+		if response.Code != http.StatusOK || service.cancel.OrderID != "order-1" || service.cancel.IdempotencyKey != "cancel-1" {
+			t.Fatalf("unexpected cancel result: status=%d input=%#v body=%s", response.Code, service.cancel, response.Body.String())
+		}
+	})
+
+	t.Run("maps filled cancellation", func(t *testing.T) {
+		handler := NewOrderHandler(&orderPlacementStub{err: trading.ErrOrderAlreadyFilled}, slog.Default())
+		request := httptest.NewRequest(http.MethodDelete, "/v2/orders/order-1", nil)
+		request.SetPathValue("order_id", "order-1")
+		request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, principal))
+		response := httptest.NewRecorder()
+		handler.Cancel(response, request)
+		assertErrorCode(t, response, http.StatusBadRequest, "ORDER_ALREADY_FILLED")
+	})
+}
+
+func TestOrderLifecycleDefaultListIncludesAllActiveStates(t *testing.T) {
+	service := &orderPlacementStub{orders: []trading.Order{{ID: "order-1", Status: "PARTIALLY_FILLED"}}}
+	handler := NewOrderHandler(service, slog.Default())
+	request := httptest.NewRequest(http.MethodGet, "/v2/orders", nil)
+	request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, auth.Principal{UserID: "user-1", ActiveAccountID: "account-1"}))
+	response := httptest.NewRecorder()
+	handler.List(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	if service.filter.Status != "" || service.filter.History {
+		t.Fatalf("default active-order filter was narrowed unexpectedly: %#v", service.filter)
+	}
 }
 
 func authenticatedOrderRequest(body string, principal auth.Principal) *http.Request {

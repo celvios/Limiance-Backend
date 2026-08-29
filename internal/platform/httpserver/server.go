@@ -23,6 +23,9 @@ import (
 	"github.com/limiance/backend/internal/phone"
 	"github.com/limiance/backend/internal/pnl"
 	"github.com/limiance/backend/internal/security/geetest"
+	"github.com/limiance/backend/internal/trading"
+	tradingpostgres "github.com/limiance/backend/internal/trading/postgres"
+	"github.com/limiance/backend/internal/trading/transport"
 	"github.com/limiance/backend/internal/transfers"
 	"github.com/limiance/backend/internal/withdrawals"
 )
@@ -132,6 +135,27 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 		mux.Handle("POST /v1/accounts/subaccounts/{account_id}/unfreeze", requireSession(authService)(http.HandlerFunc(accountHandler.SubaccountLifecycle)))
 		mux.Handle("DELETE /v1/accounts/subaccounts/{account_id}", requireSession(authService)(http.HandlerFunc(accountHandler.SubaccountLifecycle)))
 		mux.Handle("GET /v1/user/profile", requireSessionOrAPIKey(authService, data, cfg.VerificationEncryptionKey)(http.HandlerFunc(profileHandler.Get)))
+
+		orderEngine, orderEngineErr := transport.NewRequestClient(context.Background(), cfg.MatchingEngineOrderURL, cfg.MatchingEngineTimeout)
+		controlEngine, controlEngineErr := transport.NewRequestClient(context.Background(), cfg.MatchingEngineControlURL, cfg.MatchingEngineTimeout)
+		if orderEngineErr != nil || controlEngineErr != nil {
+			logger.Error("order gateway disabled", "order_engine_error", orderEngineErr, "control_engine_error", controlEngineErr)
+			if orderEngine != nil {
+				_ = orderEngine.Close()
+			}
+			if controlEngine != nil {
+				_ = controlEngine.Close()
+			}
+		} else {
+			orderService := trading.NewService(tradingpostgres.New(pool), cachedTradingFeeResolver{service: fees.NewService(data, nil)}, orderEngine).WithControlEngine(controlEngine)
+			orderHandler := NewOrderHandler(orderService, logger)
+			orderAuth := requireAccountSessionOrAPIKey(authService, data, cfg.VerificationEncryptionKey)
+			mux.Handle("POST /v2/orders", orderAuth(http.HandlerFunc(orderHandler.Place)))
+			mux.Handle("GET /v2/orders", orderAuth(http.HandlerFunc(orderHandler.List)))
+			mux.Handle("GET /v2/orders/history", orderAuth(http.HandlerFunc(orderHandler.History)))
+			mux.Handle("GET /v2/orders/{order_id}", orderAuth(http.HandlerFunc(orderHandler.Get)))
+			mux.Handle("DELETE /v2/orders/{order_id}", orderAuth(http.HandlerFunc(orderHandler.Cancel)))
+		}
 		mux.Handle("PUT /v1/user/preferences", requireSession(authService)(http.HandlerFunc(profileHandler.Preferences)))
 		feesHandler := NewFeesHandler(fees.NewService(data, nil))
 		limitsHandler := NewLimitsHandler(data)

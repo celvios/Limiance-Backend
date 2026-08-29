@@ -51,6 +51,9 @@ type Config struct {
 	TravelRuleEncryptionKey   string
 	TOTPEncryptionKey         string
 	BybitMarketDataBaseURL    string
+	MatchingEngineOrderURL    string
+	MatchingEngineControlURL  string
+	MatchingEngineTimeout     time.Duration
 	AWSRegion                 string
 	SQSOutboxQueueURL         string
 	SQSNotificationsQueueURL  string
@@ -110,6 +113,9 @@ func Load() Config {
 		TravelRuleEncryptionKey:   strings.TrimSpace(os.Getenv("TRAVEL_RULE_ENCRYPTION_KEY")),
 		TOTPEncryptionKey:         strings.TrimSpace(os.Getenv("TOTP_ENCRYPTION_KEY")),
 		BybitMarketDataBaseURL:    value("BYBIT_MARKET_DATA_BASE_URL", "https://api.bybit.com"),
+		MatchingEngineOrderURL:    value("MATCHING_ENGINE_ORDER_ENDPOINT", "tcp://127.0.0.1:5555"),
+		MatchingEngineControlURL:  value("MATCHING_ENGINE_CONTROL_ENDPOINT", "tcp://127.0.0.1:5556"),
+		MatchingEngineTimeout:     durationValue("MATCHING_ENGINE_REQUEST_TIMEOUT", 250*time.Millisecond),
 		AWSRegion:                 value("AWS_REGION", "eu-central-1"),
 		SQSOutboxQueueURL:         strings.TrimSpace(os.Getenv("SQS_OUTBOX_QUEUE_URL")),
 		SQSNotificationsQueueURL:  strings.TrimSpace(os.Getenv("SQS_NOTIFICATIONS_QUEUE_URL")),

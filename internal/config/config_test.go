@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestDatabaseURLFromRDSSecretFields(t *testing.T) {
 	t.Setenv("DATABASE_URL", "")
@@ -41,5 +44,19 @@ func TestDatabaseURLFromRDSSecretJSON(t *testing.T) {
 	want := "postgres://limiance:p%40ss%3A%2Fword@limiance.example.rds.amazonaws.com:5432/limiance?sslmode=require"
 	if got != want {
 		t.Fatalf("databaseURL() = %q, want %q", got, want)
+	}
+}
+
+func TestMatchingEngineTransportConfiguration(t *testing.T) {
+	t.Setenv("MATCHING_ENGINE_ORDER_ENDPOINT", "tcp://engine:6001")
+	t.Setenv("MATCHING_ENGINE_CONTROL_ENDPOINT", "tcp://engine:6002")
+	t.Setenv("MATCHING_ENGINE_REQUEST_TIMEOUT", "750ms")
+
+	config := Load()
+	if config.MatchingEngineOrderURL != "tcp://engine:6001" || config.MatchingEngineControlURL != "tcp://engine:6002" {
+		t.Fatalf("unexpected matching engine endpoints: order=%q control=%q", config.MatchingEngineOrderURL, config.MatchingEngineControlURL)
+	}
+	if config.MatchingEngineTimeout != 750*time.Millisecond {
+		t.Fatalf("unexpected matching engine timeout: %s", config.MatchingEngineTimeout)
 	}
 }

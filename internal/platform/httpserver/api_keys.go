@@ -28,10 +28,18 @@ type APIKeyHandler struct {
 }
 
 func requireSessionOrAPIKey(service *auth.Service, data *datamanager.Manager, encryptionKey string) func(http.Handler) http.Handler {
+	return requireSessionOrAPIKeyWithSession(requireSession(service), data, encryptionKey)
+}
+
+func requireAccountSessionOrAPIKey(service *auth.Service, data *datamanager.Manager, encryptionKey string) func(http.Handler) http.Handler {
+	return requireSessionOrAPIKeyWithSession(requireAccountSession(service), data, encryptionKey)
+}
+
+func requireSessionOrAPIKeyWithSession(sessionAuthentication func(http.Handler) http.Handler, data *datamanager.Manager, encryptionKey string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("X-API-Key") == "" {
-				requireSession(service)(next).ServeHTTP(w, r)
+				sessionAuthentication(next).ServeHTTP(w, r)
 				return
 			}
 			key := r.Header.Get("X-API-Key")

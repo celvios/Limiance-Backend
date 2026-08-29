@@ -94,6 +94,12 @@ func (service *Service) PlaceOrder(ctx context.Context, input PlaceOrderInput) (
 func (service *Service) ListOrders(ctx context.Context, userID, accountID string, filter OrderFilter) ([]Order, error) {
 	filter.Status = strings.ToUpper(strings.TrimSpace(filter.Status))
 	filter.Pair = strings.ToUpper(strings.TrimSpace(filter.Pair))
+	if filter.Status != "" && !validOrderStatus(filter.Status) {
+		return nil, fmt.Errorf("%w: status filter is invalid", ErrInvalidOrder)
+	}
+	if filter.Pair != "" && !validPair(filter.Pair) {
+		return nil, fmt.Errorf("%w: pair filter is invalid", ErrInvalidOrder)
+	}
 	if filter.Limit <= 0 || filter.Limit > 200 {
 		filter.Limit = 50
 	}
@@ -125,8 +131,12 @@ func (service *Service) CancelOrder(ctx context.Context, input CancelOrderInput)
 	if err != nil {
 		return Order{}, err
 	}
+	existing, err := service.store.GetOrder(ctx, input.UserID, input.AccountID, input.OrderID)
+	if err != nil {
+		return Order{}, err
+	}
 	payload, err := protocol.EncodeCancelOrderCommand(protocol.CancelOrderCommand{
-		CommandID: commandID, OrderID: input.OrderID, Pair: "PENDING", TimestampNS: uint64(service.now().UTC().UnixNano()),
+		CommandID: commandID, OrderID: input.OrderID, Pair: existing.Pair, TimestampNS: uint64(service.now().UTC().UnixNano()),
 	})
 	if err != nil {
 		return Order{}, err
@@ -137,14 +147,6 @@ func (service *Service) CancelOrder(ctx context.Context, input CancelOrderInput)
 	})
 	if err != nil || order.Status == "CANCELED" {
 		return order, err
-	}
-	// The pair is database-owned. Re-encode after PrepareCancel returns the
-	// authoritative value and persist the corrected payload idempotently.
-	payload, err = protocol.EncodeCancelOrderCommand(protocol.CancelOrderCommand{
-		CommandID: commandID, OrderID: input.OrderID, Pair: order.Pair, TimestampNS: uint64(service.now().UTC().UnixNano()),
-	})
-	if err != nil {
-		return Order{}, err
 	}
 	if service.control == nil {
 		return Order{}, ErrEngineUnavailable
@@ -247,7 +249,7 @@ func normalizeOrder(input PlaceOrderInput) (PlaceOrderInput, uint64, uint64, uin
 	if input.TimeInForce != "GTC" && input.TimeInForce != "IOC" && input.TimeInForce != "FOK" {
 		return PlaceOrderInput{}, 0, 0, 0, fmt.Errorf("%w: time_in_force is invalid", ErrInvalidOrder)
 	}
-	if input.PostOnly && input.Type != "LIMIT" {
+	if input.PostOnly && effectiveOrderType(input.Type) != "LIMIT" {
 		return PlaceOrderInput{}, 0, 0, 0, fmt.Errorf("%w: post_only requires a limit order", ErrInvalidOrder)
 	}
 	price, err := parseAtomic(input.Price, effectiveOrderType(input.Type) == "MARKET")
@@ -363,6 +365,15 @@ func validPair(value string) bool {
 		}
 	}
 	return true
+}
+
+func validOrderStatus(value string) bool {
+	switch value {
+	case "CONDITIONAL", "PENDING", "PENDING_CANCEL", "OPEN", "PARTIALLY_FILLED", "FILLED", "CANCELED", "REJECTED":
+		return true
+	default:
+		return false
+	}
 }
 
 func protocolSide(value string) protocol.OrderSide {
