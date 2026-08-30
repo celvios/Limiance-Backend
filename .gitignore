@@ -12,3 +12,4 @@ tmp-*.log
 .limiance-go-cache/
 .gocache/
 .cache/
+.tmp/
