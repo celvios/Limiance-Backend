@@ -1,11 +1,14 @@
 package observability
 
 import (
+	"bufio"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -14,23 +17,30 @@ var uuidPathWithSlash = regexp.MustCompile(`/[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}/`)
 var uuidPathAtEnd = regexp.MustCompile(`/[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}$`)
 
 type Metrics struct {
-	Requests       *prometheus.CounterVec
-	Duration       *prometheus.HistogramVec
-	Errors         *prometheus.CounterVec
+	Requests        *prometheus.CounterVec
+	Duration        *prometheus.HistogramVec
+	Errors          *prometheus.CounterVec
 	WebhookReceipts *prometheus.CounterVec
-	registry       *prometheus.Registry
+	registry        *prometheus.Registry
 }
 
 func NewMetrics() *Metrics {
+	return NewMetricsWithDB(nil)
+}
+
+func NewMetricsWithDB(pool *pgxpool.Pool) *Metrics {
 	registry := prometheus.NewRegistry()
 	metrics := &Metrics{
-		Requests: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "limiance_http_requests_total", Help: "Total HTTP requests handled by the API."}, []string{"method", "path", "status"}),
-		Duration: prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "limiance_http_request_duration_seconds", Help: "HTTP request duration in seconds.", Buckets: prometheus.DefBuckets}, []string{"method", "path"}),
-		Errors: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "limiance_http_errors_total", Help: "Total HTTP errors emitted by the API."}, []string{"method", "path", "status"}),
+		Requests:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "limiance_http_requests_total", Help: "Total HTTP requests handled by the API."}, []string{"method", "path", "status"}),
+		Duration:        prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "limiance_http_request_duration_seconds", Help: "HTTP request duration in seconds.", Buckets: prometheus.DefBuckets}, []string{"method", "path"}),
+		Errors:          prometheus.NewCounterVec(prometheus.CounterOpts{Name: "limiance_http_errors_total", Help: "Total HTTP errors emitted by the API."}, []string{"method", "path", "status"}),
 		WebhookReceipts: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "limiance_webhook_receipts_total", Help: "Webhook receipt count by provider and result."}, []string{"provider", "status"}),
-		registry: registry,
+		registry:        registry,
 	}
 	registry.MustRegister(metrics.Requests, metrics.Duration, metrics.Errors, metrics.WebhookReceipts)
+	if pool != nil {
+		registry.MustRegister(NewDatabaseCollector(pool))
+	}
 	return metrics
 }
 
@@ -78,3 +88,21 @@ func (w *statusWriter) Write(body []byte) (int, error) {
 	}
 	return w.ResponseWriter.Write(body)
 }
+
+// Hijack preserves protocol upgrades such as WebSockets when the metrics
+// middleware wraps the server's response writer.
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	return hijacker.Hijack()
+}
+
+func (w *statusWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

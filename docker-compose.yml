@@ -1,4 +1,91 @@
 services:
+  migrate:
+    image: limiance-backend:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["/app/migrate"]
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgres://limiance:development-only@postgres:5432/limiance?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+  api:
+    image: limiance-backend:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      APP_ENV: development
+      HTTP_ADDRESS: :8080
+      DATABASE_URL: postgres://limiance:development-only@postgres:5432/limiance?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      MATCHING_ENGINE_ORDER_ENDPOINT: tcp://matching-engine:5555
+      MATCHING_ENGINE_CONTROL_ENDPOINT: tcp://matching-engine:5556
+      MATCHING_ENGINE_EVENT_ENDPOINT: tcp://matching-engine:5557
+      AWS_REGION: eu-central-1
+      SQS_ENDPOINT: http://localstack:4566
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      matching-engine:
+        condition: service_started
+    restart: unless-stopped
+  matching-engine:
+    image: limiance-matching-engine:local
+    build:
+      context: .
+      dockerfile: engine/Dockerfile
+    environment:
+      ENGINE_ORDER_BIND: tcp://*:5555
+      ENGINE_CONTROL_BIND: tcp://*:5556
+      ENGINE_EVENT_BIND: tcp://*:5557
+      ENGINE_JOURNAL_DIR: /var/lib/limiance-engine
+      ENGINE_ORDER_CAPACITY: "1000000"
+    ports:
+      - "127.0.0.1:5555:5555"
+      - "127.0.0.1:5556:5556"
+      - "127.0.0.1:5557:5557"
+    volumes:
+      - matching-engine-journal:/var/lib/limiance-engine
+    restart: unless-stopped
+  trade-settlement:
+    image: limiance-backend:local
+    command: ["/app/trade-settlement"]
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgres://limiance:development-only@postgres:5432/limiance?sslmode=disable
+      MATCHING_ENGINE_CONTROL_ENDPOINT: tcp://matching-engine:5556
+      MATCHING_ENGINE_EVENT_ENDPOINT: tcp://matching-engine:5557
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      matching-engine:
+        condition: service_started
+    restart: unless-stopped
+  market-data:
+    image: limiance-backend:local
+    command: ["/app/market-data"]
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgres://limiance:development-only@postgres:5432/limiance?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      MATCHING_ENGINE_CONTROL_ENDPOINT: tcp://matching-engine:5556
+      MATCHING_ENGINE_EVENT_ENDPOINT: tcp://matching-engine:5557
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      matching-engine:
+        condition: service_started
+    restart: unless-stopped
   postgres:
     image: postgres:17-alpine
     environment:
@@ -19,6 +106,11 @@ services:
     ports:
       - "127.0.0.1:6380:6379"
     command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
   localstack:
     image: localstack/localstack:4.12.0
     environment:
@@ -49,3 +141,4 @@ services:
       - ./observability/limiance-dashboard.json:/var/lib/grafana/dashboards/limiance.json:ro
 volumes:
   postgres-data:
+  matching-engine-journal:

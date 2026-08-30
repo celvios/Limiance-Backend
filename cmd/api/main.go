@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,13 +10,14 @@ import (
 	"time"
 
 	"github.com/limiance/backend/internal/config"
+	"github.com/limiance/backend/internal/observability"
 	"github.com/limiance/backend/internal/platform/database"
 	platformhttp "github.com/limiance/backend/internal/platform/httpserver"
 )
 
 func main() {
 	cfg := config.Load()
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
+	logger := observability.NewJSONLogger(os.Stdout, cfg.LogLevel)
 	pool, err := database.Open(context.Background(), cfg.DatabaseURL)
 	if err != nil {
 		logger.Error("database connection failed", "error", err)

@@ -35,7 +35,7 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 	mux := http.NewServeMux()
 	backgroundContext, stopBackground := context.WithCancel(context.Background())
 	var shutdownClosers []func()
-	metrics := observability.NewMetrics()
+	metrics := observability.NewMetricsWithDB(pool)
 	mux.Handle("GET /metrics", metrics.Handler())
 	mux.HandleFunc("GET /healthz", health)
 	data := datamanager.New(pool)

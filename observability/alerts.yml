@@ -22,3 +22,46 @@ groups:
           severity: critical
         annotations:
           summary: Limiance API metrics target is down
+      - alert: LimianceWalletBalanceReadFailure
+        expr: sum(increase(limiance_http_requests_total{path="/v1/wallet/balances",status=~"5.."}[2m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Wallet balance reads are returning server errors
+          description: A wallet balance read failed. Treat the balance as unavailable, never as zero, and investigate the API logs and ledger reconciliation.
+      - alert: LimianceLedgerImbalance
+        expr: limiance_ledger_imbalanced_groups > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Ledger debit and credit totals do not reconcile
+      - alert: LimianceWithdrawalQueueBacklog
+        expr: sum(limiance_withdrawal_queue_backlog) > 10
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: More than 10 withdrawals have remained queued for 30 minutes
+      - alert: LimianceOutboxQueueLag
+        expr: limiance_sqs_queue_lag_seconds{queue="outbox"} > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Durable events have waited more than five minutes for SQS publication
+      - alert: LimianceFireblocksWebhookSilent
+        expr: time() - limiance_webhook_last_received_unixtime{provider="fireblocks"} > 600
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: No Fireblocks webhook has been received for more than 10 minutes
+      - alert: LimianceFireblocksWebhookMetricMissing
+        expr: absent(limiance_webhook_last_received_unixtime{provider="fireblocks"})
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Fireblocks webhook monitoring has no durable receipt data

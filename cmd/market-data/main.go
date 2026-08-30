@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/limiance/backend/internal/config"
 	"github.com/limiance/backend/internal/marketdata"
+	"github.com/limiance/backend/internal/observability"
 	"github.com/limiance/backend/internal/platform/database"
 	"github.com/limiance/backend/internal/trading"
 	"github.com/limiance/backend/internal/trading/transport"
@@ -17,7 +17,7 @@ import (
 
 func main() {
 	cfg := config.Load()
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
+	logger := observability.NewJSONLogger(os.Stdout, cfg.LogLevel)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if cfg.RedisURL == "" {

@@ -25,6 +25,43 @@
       "gridPos": {"h": 5, "w": 8, "x": 0, "y": 8},
       "targets": [{"expr": "sum(rate(limiance_http_requests_total{status=~\"5..\"}[5m])) / clamp_min(sum(rate(limiance_http_requests_total[5m])), 1)", "legendFormat": "error rate"}],
       "fieldConfig": {"defaults": {"unit": "percentunit"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "Deposit and withdrawal throughput",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 13},
+      "targets": [
+        {"expr": "sum by (status) (rate(limiance_deposits_total[5m]))", "legendFormat": "deposits {{status}}"},
+        {"expr": "sum by (status) (rate(limiance_withdrawals_total[5m]))", "legendFormat": "withdrawals {{status}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Queue backlog and lag",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 13},
+      "targets": [
+        {"expr": "limiance_sqs_queue_backlog", "legendFormat": "{{queue}} backlog"},
+        {"expr": "limiance_sqs_queue_lag_seconds", "legendFormat": "{{queue}} lag seconds"},
+        {"expr": "sum(limiance_withdrawal_queue_backlog)", "legendFormat": "withdrawal backlog"}
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Active sessions",
+      "gridPos": {"h": 5, "w": 6, "x": 8, "y": 8},
+      "targets": [{"expr": "limiance_active_sessions", "legendFormat": "sessions"}]
+    },
+    {
+      "type": "stat",
+      "title": "Ledger imbalances",
+      "gridPos": {"h": 5, "w": 5, "x": 14, "y": 8},
+      "targets": [{"expr": "limiance_ledger_imbalanced_groups", "legendFormat": "imbalanced groups"}]
+    },
+    {
+      "type": "stat",
+      "title": "Fireblocks webhook age",
+      "gridPos": {"h": 5, "w": 5, "x": 19, "y": 8},
+      "targets": [{"expr": "time() - limiance_webhook_last_received_unixtime{provider=\"fireblocks\"}", "legendFormat": "seconds"}]
     }
   ]
 }

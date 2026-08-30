@@ -8,6 +8,9 @@ fireblocks_*.csr
 tmp/
 tmp-*.log
 .limiance-go-cache/
+.gocache/
+.cache/
+.tmp/
 coverage.out
 node_modules/
 dist/
