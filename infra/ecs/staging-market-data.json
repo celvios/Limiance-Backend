@@ -10,7 +10,7 @@
   "containerDefinitions": [
     {
       "name": "market-data",
-      "image": "041659147758.dkr.ecr.eu-north-1.amazonaws.com/limiance-backend@sha256:6ee264d12511d601c091c1ae92d378b608a6ccc42cfa2932f61a1ca9fb2d5463",
+      "image": "041659147758.dkr.ecr.eu-north-1.amazonaws.com/limiance-backend@sha256:9a45e738ea784854ce212ef9a2ae815bd75398840c472ccd5b72ac3b80c09c5d",
       "essential": true,
       "readonlyRootFilesystem": true,
       "command": ["/app/market-data"],
