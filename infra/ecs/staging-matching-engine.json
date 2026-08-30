@@ -1,0 +1,64 @@
+{
+  "family": "limiance-staging-matching-engine",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::041659147758:role/limiance-staging-ecs-execution",
+  "taskRoleArn": "arn:aws:iam::041659147758:role/limiance-staging-ecs-task",
+  "runtimePlatform": {
+    "operatingSystemFamily": "LINUX",
+    "cpuArchitecture": "X86_64"
+  },
+  "containerDefinitions": [
+    {
+      "name": "matching-engine",
+      "image": "041659147758.dkr.ecr.eu-north-1.amazonaws.com/limiance-matching-engine@sha256:47911373c522edb307cf906faccec7f52641cd600b0c3c7e21062e46959a7ddc",
+      "essential": true,
+      "readonlyRootFilesystem": true,
+      "portMappings": [
+        {"containerPort": 5555, "protocol": "tcp"},
+        {"containerPort": 5556, "protocol": "tcp"},
+        {"containerPort": 5557, "protocol": "tcp"}
+      ],
+      "environment": [
+        {"name": "ENGINE_ORDER_BIND", "value": "tcp://*:5555"},
+        {"name": "ENGINE_CONTROL_BIND", "value": "tcp://*:5556"},
+        {"name": "ENGINE_EVENT_BIND", "value": "tcp://*:5557"},
+        {"name": "ENGINE_JOURNAL_DIR", "value": "/var/lib/limiance-engine"},
+        {"name": "ENGINE_ORDER_CAPACITY", "value": "1000000"}
+      ],
+      "mountPoints": [
+        {
+          "sourceVolume": "engine-journal",
+          "containerPath": "/var/lib/limiance-engine",
+          "readOnly": false
+        }
+      ],
+      "ulimits": [
+        {"name": "nofile", "softLimit": 65536, "hardLimit": 65536}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/limiance-staging",
+          "awslogs-region": "eu-north-1",
+          "awslogs-stream-prefix": "matching-engine"
+        }
+      }
+    }
+  ],
+  "volumes": [
+    {
+      "name": "engine-journal",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "fs-0b3eaf45ceb039de6",
+        "transitEncryption": "ENABLED",
+        "authorizationConfig": {
+          "accessPointId": "fsap-0a0021ffd25b57efc",
+          "iam": "DISABLED"
+        }
+      }
+    }
+  ]
+}

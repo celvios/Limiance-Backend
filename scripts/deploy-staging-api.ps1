@@ -21,6 +21,8 @@ $DatabaseInstance = 'limiance-staging'
 $ApplicationSecret = 'limiance/staging/app'
 $LogGroup = '/ecs/limiance-staging'
 $AllowedBrowserOrigins = 'https://staging.celvios.site,https://admin.celvios.site'
+$RedisURL = 'rediss://master.limiance-staging-cache.rrdl4p.eun1.cache.amazonaws.com:6379/0'
+$MatchingEngineHost = 'limiance-staging-engine-0ebc2ae52c49823e.elb.eu-north-1.amazonaws.com'
 $Aws = 'C:\Program Files\Amazon\AWSCLIV2\aws.exe'
 
 if (-not (Test-Path -LiteralPath $Aws)) {
@@ -86,6 +88,10 @@ $Container = [pscustomobject]@{
     environment = @(
         [pscustomobject]@{ name = 'RDS_DB_HOST'; value = $RdsHost },
         [pscustomobject]@{ name = 'RDS_DB_PORT'; value = "$RdsPort" },
+		[pscustomobject]@{ name = 'REDIS_URL'; value = $RedisURL },
+		[pscustomobject]@{ name = 'MATCHING_ENGINE_ORDER_ENDPOINT'; value = "tcp://$MatchingEngineHost`:5555" },
+		[pscustomobject]@{ name = 'MATCHING_ENGINE_CONTROL_ENDPOINT'; value = "tcp://$MatchingEngineHost`:5556" },
+		[pscustomobject]@{ name = 'MATCHING_ENGINE_EVENT_ENDPOINT'; value = "tcp://$MatchingEngineHost`:5557" },
 		# Browser origins are public configuration. Keep the customer frontend
 		# explicit; the administrator application must use its own API/session.
 		[pscustomobject]@{ name = 'CORS_ALLOWED_ORIGINS'; value = $AllowedBrowserOrigins },
@@ -147,10 +153,10 @@ if ($ExitCode -ne 0) {
 
 $ServiceStatus = & $Aws ecs describe-services --region $Region --cluster $Cluster --services $Service --query 'services[0].status' --output text 2>$null
 if ($ServiceStatus -eq 'ACTIVE') {
-    & $Aws ecs update-service --region $Region --cluster $Cluster --service $Service --task-definition $TaskDefinitionArn --desired-count 2 --force-new-deployment | Out-Null
+    & $Aws ecs update-service --region $Region --cluster $Cluster --service $Service --task-definition $TaskDefinitionArn --desired-count 2 --deployment-configuration 'deploymentCircuitBreaker={enable=true,rollback=true},maximumPercent=200,minimumHealthyPercent=100' --force-new-deployment | Out-Null
 }
 else {
-    & $Aws ecs create-service --region $Region --cluster $Cluster --service-name $Service --task-definition $TaskDefinitionArn --desired-count 2 --launch-type FARGATE --network-configuration $NetworkConfig | Out-Null
+    & $Aws ecs create-service --region $Region --cluster $Cluster --service-name $Service --task-definition $TaskDefinitionArn --desired-count 2 --launch-type FARGATE --network-configuration $NetworkConfig --deployment-configuration 'deploymentCircuitBreaker={enable=true,rollback=true},maximumPercent=200,minimumHealthyPercent=100' | Out-Null
 }
 
 & $Aws ecs wait services-stable --region $Region --cluster $Cluster --services $Service

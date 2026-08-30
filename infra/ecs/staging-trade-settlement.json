@@ -1,0 +1,40 @@
+{
+  "family": "limiance-staging-trade-settlement",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::041659147758:role/limiance-staging-ecs-execution",
+  "taskRoleArn": "arn:aws:iam::041659147758:role/limiance-staging-ecs-task",
+  "runtimePlatform": {"operatingSystemFamily": "LINUX", "cpuArchitecture": "X86_64"},
+  "containerDefinitions": [
+    {
+      "name": "trade-settlement",
+      "image": "041659147758.dkr.ecr.eu-north-1.amazonaws.com/limiance-backend@sha256:6ee264d12511d601c091c1ae92d378b608a6ccc42cfa2932f61a1ca9fb2d5463",
+      "essential": true,
+      "readonlyRootFilesystem": true,
+      "command": ["/app/trade-settlement"],
+      "environment": [
+        {"name": "APP_ENV", "value": "staging"},
+        {"name": "AWS_REGION", "value": "eu-north-1"},
+        {"name": "LOG_LEVEL", "value": "info"},
+        {"name": "RDS_DB_HOST", "value": "limiance-staging.cnws4gckkj41.eu-north-1.rds.amazonaws.com"},
+        {"name": "RDS_DB_PORT", "value": "5432"},
+        {"name": "RDS_DB_NAME", "value": "postgres"},
+        {"name": "MATCHING_ENGINE_CONTROL_ENDPOINT", "value": "tcp://limiance-staging-engine-0ebc2ae52c49823e.elb.eu-north-1.amazonaws.com:5556"},
+        {"name": "MATCHING_ENGINE_EVENT_ENDPOINT", "value": "tcp://limiance-staging-engine-0ebc2ae52c49823e.elb.eu-north-1.amazonaws.com:5557"}
+      ],
+      "secrets": [
+        {"name": "RDS_SECRET_JSON", "valueFrom": "arn:aws:secretsmanager:eu-north-1:041659147758:secret:rds!db-478015f7-06f9-4d6a-a543-4ab191f64270-mWw57h"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/limiance-staging",
+          "awslogs-region": "eu-north-1",
+          "awslogs-stream-prefix": "trade-settlement"
+        }
+      }
+    }
+  ]
+}
