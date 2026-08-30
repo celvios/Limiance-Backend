@@ -1,0 +1,22 @@
+services:
+  matching-engine:
+    build:
+      context: ..
+      dockerfile: engine/Dockerfile
+    image: limiance-matching-engine:local
+    environment:
+      ENGINE_ORDER_BIND: tcp://*:5555
+      ENGINE_CONTROL_BIND: tcp://*:5556
+      ENGINE_EVENT_BIND: tcp://*:5557
+      ENGINE_JOURNAL_DIR: /var/lib/limiance-engine
+      ENGINE_ORDER_CAPACITY: "1000000"
+    ports:
+      - "127.0.0.1:5555:5555"
+      - "127.0.0.1:5556:5556"
+      - "127.0.0.1:5557:5557"
+    volumes:
+      - matching-engine-journal:/var/lib/limiance-engine
+    restart: unless-stopped
+
+volumes:
+  matching-engine-journal:
