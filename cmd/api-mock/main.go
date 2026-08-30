@@ -25,7 +25,10 @@ func newMockHandler() http.Handler {
 		jsonResponse(w, http.StatusOK, `{"sequence_id":1,"timestamp_ns":1788000000000000000,"pair":"BTCUSDT","bids":[["5000000000000","1000000","1"]],"asks":[["5000100000000","1000000","1"]]}`)
 	})
 	mux.HandleFunc("GET /v2/market/ticker/{pair}", func(w http.ResponseWriter, _ *http.Request) {
-		jsonResponse(w, http.StatusOK, `{"pair":"BTCUSDT","sequence_id":1,"last_price":"5000000000000","high_24h":"5100000000000","low_24h":"4900000000000","volume_24h":"100000000","quote_volume_24h":"5000000000000","change_24h":"100000000000"}`)
+		jsonResponse(w, http.StatusOK, `{"pair":"BTCUSDT","sequence_id":1,"last_price":"5000000000000","high_24h":"5100000000000","low_24h":"4900000000000","volume_24h":"100000000","quote_volume_24h":"5000000000000","change_24h":"100000000000","change_bps_24h":"204"}`)
+	})
+	mux.HandleFunc("GET /v2/market/tickers", func(w http.ResponseWriter, _ *http.Request) {
+		jsonResponse(w, http.StatusOK, `{"tickers":[{"pair":"BTCUSDT","sequence_id":1,"last_price":"5000000000000","high_24h":"5100000000000","low_24h":"4900000000000","volume_24h":"100000000","quote_volume_24h":"5000000000000","change_24h":"100000000000","change_bps_24h":"204"}]}`)
 	})
 	mux.HandleFunc("GET /v2/market/trades/{pair}", func(w http.ResponseWriter, _ *http.Request) { jsonResponse(w, http.StatusOK, `{"trades":[]}`) })
 	mux.HandleFunc("GET /v2/market/klines/{pair}", func(w http.ResponseWriter, _ *http.Request) { jsonResponse(w, http.StatusOK, `{"candles":[]}`) })

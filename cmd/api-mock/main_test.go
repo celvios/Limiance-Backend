@@ -14,3 +14,11 @@ func TestMockServerMatchesAtomicStringContract(t *testing.T) {
 		t.Fatalf("mock response status=%d body=%s", response.Code, response.Body.String())
 	}
 }
+
+func TestMockAllTickersSupportsFrontendRankings(t *testing.T) {
+	response := httptest.NewRecorder()
+	newMockHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v2/market/tickers", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"change_bps_24h":"204"`) {
+		t.Fatalf("unexpected all-tickers response: %d %s", response.Code, response.Body.String())
+	}
+}

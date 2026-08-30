@@ -25,6 +25,7 @@ type MarketReader interface {
 	PairExists(context.Context, string) (bool, error)
 	RecentTrades(context.Context, string, int) ([]marketdata.Trade, error)
 	Ticker(context.Context, string, time.Time) (marketdata.Ticker, error)
+	Tickers(context.Context, time.Time) ([]marketdata.Ticker, error)
 	MinuteCandles(context.Context, string, time.Time, int) ([]marketdata.Candle, error)
 }
 
@@ -120,6 +121,15 @@ func (handler *MarketV2Handler) Ticker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, ticker)
+}
+
+func (handler *MarketV2Handler) Tickers(w http.ResponseWriter, r *http.Request) {
+	tickers, err := handler.repository.Tickers(r.Context(), handler.now())
+	if err != nil {
+		marketError(w, http.StatusServiceUnavailable, "MARKET_DATA_UNAVAILABLE", "tickers unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tickers": tickers})
 }
 
 func (handler *MarketV2Handler) Klines(w http.ResponseWriter, r *http.Request) {

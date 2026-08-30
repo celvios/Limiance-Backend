@@ -102,6 +102,15 @@ paths:
       responses:
         '200': { description: Rolling 24-hour ticker, content: { application/json: { schema: { $ref: '#/components/schemas/Ticker' } } } }
         default: { $ref: '#/components/responses/Error' }
+  /market/tickers:
+    get:
+      operationId: listTickers
+      tags: [Market]
+      security: []
+      description: Returns every enabled or halted market, including zero-volume markets. Use signed integer basis points for percentage ranking.
+      responses:
+        '200': { description: Rolling 24-hour tickers ordered by pair, content: { application/json: { schema: { type: object, required: [tickers], properties: { tickers: { type: array, items: { $ref: '#/components/schemas/Ticker' } } } } } } }
+        default: { $ref: '#/components/responses/Error' }
   /market/trades/{pair}:
     get:
       operationId: listMarketTrades
@@ -224,8 +233,8 @@ components:
     BookLevel: { type: array, minItems: 3, maxItems: 3, items: { type: string, pattern: '^[0-9]+$' } }
     Ticker:
       type: object
-      required: [pair, sequence_id, last_price, high_24h, low_24h, volume_24h, quote_volume_24h, change_24h]
-      properties: { pair: { $ref: '#/components/schemas/Pair' }, sequence_id: { type: integer }, last_price: { $ref: '#/components/schemas/Atomic' }, high_24h: { $ref: '#/components/schemas/Atomic' }, low_24h: { $ref: '#/components/schemas/Atomic' }, volume_24h: { $ref: '#/components/schemas/Atomic' }, quote_volume_24h: { $ref: '#/components/schemas/Atomic' }, change_24h: { $ref: '#/components/schemas/SignedAtomic' } }
+      required: [pair, sequence_id, last_price, high_24h, low_24h, volume_24h, quote_volume_24h, change_24h, change_bps_24h]
+      properties: { pair: { $ref: '#/components/schemas/Pair' }, sequence_id: { type: integer }, last_price: { $ref: '#/components/schemas/Atomic' }, high_24h: { $ref: '#/components/schemas/Atomic' }, low_24h: { $ref: '#/components/schemas/Atomic' }, volume_24h: { $ref: '#/components/schemas/Atomic' }, quote_volume_24h: { $ref: '#/components/schemas/Atomic' }, change_24h: { $ref: '#/components/schemas/SignedAtomic' }, change_bps_24h: { $ref: '#/components/schemas/SignedAtomic', description: Signed 24-hour percentage change in basis points, truncated toward zero. } }
     Trade:
       type: object
       required: [pair, sequence_id, timestamp, price, quantity, quote_volume, side]

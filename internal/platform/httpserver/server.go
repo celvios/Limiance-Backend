@@ -89,6 +89,7 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 		}
 		mux.Handle("GET /v2/market/markets", publicMarketLimit(marketV2Handler.Markets))
 		mux.Handle("GET /v2/market/orderbook/{pair}", publicMarketLimit(marketV2Handler.OrderBook))
+		mux.Handle("GET /v2/market/tickers", publicMarketLimit(marketV2Handler.Tickers))
 		mux.Handle("GET /v2/market/ticker/{pair}", publicMarketLimit(marketV2Handler.Ticker))
 		mux.Handle("GET /v2/market/trades/{pair}", publicMarketLimit(marketV2Handler.Trades))
 		mux.Handle("GET /v2/market/klines/{pair}", publicMarketLimit(marketV2Handler.Klines))

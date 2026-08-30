@@ -35,6 +35,18 @@ type Ticker struct {
 	Volume24H      string `json:"volume_24h"`
 	QuoteVolume24H string `json:"quote_volume_24h"`
 	Change24H      string `json:"change_24h"`
+	ChangeBPS24H   string `json:"change_bps_24h"`
+}
+
+func tickerChanges(lastPrice, openingPrice string) (string, string) {
+	last, lastOK := new(big.Int).SetString(lastPrice, 10)
+	opening, openingOK := new(big.Int).SetString(openingPrice, 10)
+	if !lastOK || !openingOK || opening.Sign() <= 0 {
+		return "0", "0"
+	}
+	change := new(big.Int).Sub(last, opening)
+	basisPoints := new(big.Int).Quo(new(big.Int).Mul(new(big.Int).Set(change), big.NewInt(10000)), opening)
+	return change.String(), basisPoints.String()
 }
 
 type Candle struct {

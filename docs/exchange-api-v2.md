@@ -43,6 +43,8 @@ Connect to `/v2/ws` (the compatibility endpoint `/ws/v2/market` is also served).
 
 Channels are `orderbook.PAIR`, `trades.PAIR`, `ticker.PAIR`, and `klines.PAIR.INTERVAL`. Reconnecting clients receive a current snapshot before incrementals. Every incremental includes a monotonic `sequence_id`; reconnect if continuity is lost. Send `{"action":"unsubscribe","channel":"..."}` to stop a channel. The server uses ping/pong heartbeats and disconnects clients whose bounded outbound queue remains full.
 
+`GET /v2/market/tickers` returns all visible markets in one request, including halted markets with zero-volume tickers. `change_bps_24h` is a signed integer basis-point string (`100` = 1%) and is the ranking field for gainers and losers. Rank top volume by `quote_volume_24h`; all monetary fields remain atomic-unit strings.
+
 ## Local mock server
 
 Run `go run ./cmd/api-mock -address :4010`. It serves deterministic REST examples and a WebSocket subscription flow without PostgreSQL, Redis, or the matching engine. It is for frontend contract development only and does not implement authentication semantics.

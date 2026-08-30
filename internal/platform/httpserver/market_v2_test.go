@@ -31,7 +31,13 @@ func (stub marketReaderStub) RecentTrades(context.Context, string, int) ([]marke
 	return []marketdata.Trade{}, nil
 }
 func (stub marketReaderStub) Ticker(context.Context, string, time.Time) (marketdata.Ticker, error) {
-	return marketdata.Ticker{Pair: "BTCUSDT", SequenceID: 1, LastPrice: "100", High24H: "110", Low24H: "90", Volume24H: "5", Change24H: "10"}, nil
+	return marketdata.Ticker{Pair: "BTCUSDT", SequenceID: 1, LastPrice: "100", High24H: "110", Low24H: "90", Volume24H: "5", Change24H: "10", ChangeBPS24H: "1111"}, nil
+}
+func (stub marketReaderStub) Tickers(context.Context, time.Time) ([]marketdata.Ticker, error) {
+	return []marketdata.Ticker{
+		{Pair: "BTCUSDT", LastPrice: "100", Change24H: "10", ChangeBPS24H: "1111"},
+		{Pair: "ETHUSDT", LastPrice: "50", Change24H: "-5", ChangeBPS24H: "-909"},
+	}, nil
 }
 func (stub marketReaderStub) MinuteCandles(context.Context, string, time.Time, int) ([]marketdata.Candle, error) {
 	return stub.candles, nil
@@ -60,6 +66,21 @@ func TestMarketRESTIsPublicAndReturnsAtomicStrings(t *testing.T) {
 		}
 		if strings.Contains(path, "orderbook") && !strings.Contains(response.Body.String(), `"99"`) {
 			t.Fatalf("order book atomic values were not encoded as strings: %s", response.Body.String())
+		}
+	}
+}
+
+func TestAllTickersReturnsRankingReadyIntegerChanges(t *testing.T) {
+	handler, _ := testMarketHandler()
+	response := httptest.NewRecorder()
+	handler.Tickers(response, httptest.NewRequest(http.MethodGet, "/v2/market/tickers", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("tickers returned %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, expected := range []string{`"pair":"BTCUSDT"`, `"change_bps_24h":"1111"`, `"pair":"ETHUSDT"`, `"change_bps_24h":"-909"`} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("missing %s in %s", expected, body)
 		}
 	}
 }

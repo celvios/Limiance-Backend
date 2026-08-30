@@ -5,6 +5,24 @@ import (
 	"time"
 )
 
+func TestTickerChangesUseSignedIntegerBasisPoints(t *testing.T) {
+	tests := []struct {
+		name, last, opening, change, basisPoints string
+	}{
+		{name: "gain", last: "110", opening: "90", change: "20", basisPoints: "2222"},
+		{name: "loss", last: "90", opening: "110", change: "-20", basisPoints: "-1818"},
+		{name: "no trades", last: "0", opening: "0", change: "0", basisPoints: "0"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			change, basisPoints := tickerChanges(test.last, test.opening)
+			if change != test.change || basisPoints != test.basisPoints {
+				t.Fatalf("changes=(%s,%s), want (%s,%s)", change, basisPoints, test.change, test.basisPoints)
+			}
+		})
+	}
+}
+
 func TestMinuteCandleUsesIntegerAtomicValues(t *testing.T) {
 	start := time.Date(2026, 8, 29, 10, 0, 5, 0, time.UTC)
 	candle, err := NewMinuteCandle(Trade{Pair: "BTCUSDT", SequenceID: 1, Timestamp: start, PriceAtomic: "50000", QuantityAtomic: "1", QuoteAtomic: "50000", Side: "BUY"})

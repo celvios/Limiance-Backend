@@ -100,14 +100,50 @@ func (store *PostgresStore) Ticker(ctx context.Context, pair string, now time.Ti
 		return Ticker{}, fmt.Errorf("invalid ticker sequence")
 	}
 	ticker.SequenceID = sequenceValue.Uint64()
-	last, lastOK := new(big.Int).SetString(ticker.LastPrice, 10)
-	opening, openingOK := new(big.Int).SetString(first, 10)
-	if lastOK && openingOK {
-		ticker.Change24H = new(big.Int).Sub(last, opening).String()
-	} else {
-		ticker.Change24H = "0"
-	}
+	ticker.Change24H, ticker.ChangeBPS24H = tickerChanges(ticker.LastPrice, first)
 	return ticker, nil
+}
+
+func (store *PostgresStore) Tickers(ctx context.Context, now time.Time) ([]Ticker, error) {
+	rows, err := store.pool.Query(ctx, `SELECT p.symbol,
+		COALESCE(stats.last_price,'0'),COALESCE(stats.high_24h,'0'),
+		COALESCE(stats.low_24h,'0'),COALESCE(stats.volume_24h,'0'),
+		COALESCE(stats.quote_volume_24h,'0'),COALESCE(stats.opening_price,'0'),
+		COALESCE(stats.sequence_id,'0')
+		FROM trading_pairs p
+		LEFT JOIN LATERAL (
+			SELECT
+				(array_agg(price_atomic::text ORDER BY traded_at DESC,sequence_id DESC))[1] AS last_price,
+				MAX(price_atomic)::text AS high_24h,MIN(price_atomic)::text AS low_24h,
+				SUM(quantity_atomic)::text AS volume_24h,SUM(quote_amount_atomic)::text AS quote_volume_24h,
+				(array_agg(price_atomic::text ORDER BY traded_at,sequence_id))[1] AS opening_price,
+				MAX(sequence_id)::text AS sequence_id
+			FROM market_trade_events
+			WHERE pair=p.symbol AND traded_at >= $1
+		) stats ON TRUE
+		WHERE p.status <> 'disabled'
+		ORDER BY p.symbol`, now.UTC().Add(-24*time.Hour))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tickers := make([]Ticker, 0)
+	for rows.Next() {
+		var ticker Ticker
+		var openingPrice, sequence string
+		if err = rows.Scan(&ticker.Pair, &ticker.LastPrice, &ticker.High24H, &ticker.Low24H,
+			&ticker.Volume24H, &ticker.QuoteVolume24H, &openingPrice, &sequence); err != nil {
+			return nil, err
+		}
+		sequenceValue, ok := new(big.Int).SetString(sequence, 10)
+		if !ok || !sequenceValue.IsUint64() {
+			return nil, fmt.Errorf("invalid ticker sequence")
+		}
+		ticker.SequenceID = sequenceValue.Uint64()
+		ticker.Change24H, ticker.ChangeBPS24H = tickerChanges(ticker.LastPrice, openingPrice)
+		tickers = append(tickers, ticker)
+	}
+	return tickers, rows.Err()
 }
 
 func (store *PostgresStore) MinuteCandles(ctx context.Context, pair string, before time.Time, limit int) ([]Candle, error) {
