@@ -22,7 +22,7 @@ func TestExchangeV2ContractParsesAndContainsRequiredSurface(t *testing.T) {
 		t.Fatalf("validate OpenAPI: %v", err)
 	}
 	text := string(payload)
-	for _, required := range []string{"openapi: 3.1.0", "/orders:", "/market/orderbook/{pair}:", "/market/tickers:", "/market/klines/{pair}:", "/ws:", "X-API-Nonce", "request_id", "Idempotency-Key", "change_bps_24h", "STOP_MARKET", "TAKE_PROFIT_LIMIT"} {
+	for _, required := range []string{"openapi: 3.1.0", "/orders:", "/market/orderbook/{pair}:", "/market/tickers:", "/market/klines/{pair}:", "/p2p/offers:", "/p2p/trades:", "/admin/p2p/disputes:", "P2PResolution", "/ws:", "X-API-Nonce", "request_id", "Idempotency-Key", "change_bps_24h", "STOP_MARKET", "TAKE_PROFIT_LIMIT"} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("contract missing %q", required)
 		}

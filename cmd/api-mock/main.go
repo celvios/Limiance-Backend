@@ -38,6 +38,14 @@ func newMockHandler() http.Handler {
 	mux.HandleFunc("POST /v2/orders", func(w http.ResponseWriter, _ *http.Request) { jsonResponse(w, http.StatusCreated, mockOrder()) })
 	mux.HandleFunc("GET /v2/orders/{order_id}", func(w http.ResponseWriter, _ *http.Request) { jsonResponse(w, http.StatusOK, mockOrder()) })
 	mux.HandleFunc("DELETE /v2/orders/{order_id}", func(w http.ResponseWriter, _ *http.Request) { jsonResponse(w, http.StatusOK, mockOrder()) })
+	mux.HandleFunc("GET /v2/p2p/offers", func(w http.ResponseWriter, _ *http.Request) {
+		jsonResponse(w, http.StatusOK, `{"offers":[`+mockP2PTrade()+`],"limit":50,"offset":0,"has_more":false}`)
+	})
+	mux.HandleFunc("GET /v2/p2p/trades", func(w http.ResponseWriter, _ *http.Request) {
+		jsonResponse(w, http.StatusOK, `{"trades":[],"limit":50,"offset":0,"has_more":false}`)
+	})
+	mux.HandleFunc("POST /v2/p2p/trades", func(w http.ResponseWriter, _ *http.Request) { jsonResponse(w, http.StatusCreated, mockP2PTrade()) })
+	mux.HandleFunc("GET /v2/p2p/trades/{trade_id}", func(w http.ResponseWriter, _ *http.Request) { jsonResponse(w, http.StatusOK, mockP2PTrade()) })
 	mux.HandleFunc("GET /v2/ws", mockWebSocket)
 	return mux
 }
@@ -49,6 +57,10 @@ func jsonResponse(w http.ResponseWriter, status int, body string) {
 }
 func mockOrder() string {
 	return `{"id":"00000000-0000-4000-8000-000000000001","pair":"BTCUSDT","side":"BUY","type":"LIMIT","price":"5000000000000","quantity":"1000000","filled_quantity":"0","remaining_quantity":"1000000","avg_price":"0","time_in_force":"GTC","status":"OPEN","post_only":false,"reduce_only":false,"created_at":"2026-08-29T12:00:00Z","updated_at":"2026-08-29T12:00:00Z"}`
+}
+
+func mockP2PTrade() string {
+	return `{"id":"00000000-0000-4000-8000-000000000002","asset":"USDT","network":"TRON","amount_atomic":"100000000","fiat_currency":"NGN","fiat_amount":"150000.00000000","payment_method":"bank_transfer","status":"open","offer_expires_at":"2026-08-29T13:00:00Z","created_at":"2026-08-29T12:00:00Z","updated_at":"2026-08-29T12:00:00Z"}`
 }
 
 func mockWebSocket(w http.ResponseWriter, r *http.Request) {

@@ -22,3 +22,11 @@ func TestMockAllTickersSupportsFrontendRankings(t *testing.T) {
 		t.Fatalf("unexpected all-tickers response: %d %s", response.Code, response.Body.String())
 	}
 }
+
+func TestMockP2POffersUseAtomicCryptoAndDecimalFiatStrings(t *testing.T) {
+	response := httptest.NewRecorder()
+	newMockHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v2/p2p/offers", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"amount_atomic":"100000000"`) || !strings.Contains(response.Body.String(), `"fiat_amount":"150000.00000000"`) {
+		t.Fatalf("unexpected P2P offers response: %d %s", response.Code, response.Body.String())
+	}
+}

@@ -33,6 +33,14 @@ Public market endpoints live under `/v2/market`. Authenticated order endpoints l
 
 Include `request_id` in support reports. Rate-limit responses expose `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset`; HTTP 429 also returns `Retry-After`. Trading endpoints fail closed if the shared Redis limiter is unavailable.
 
+## P2P escrow
+
+P2P crypto escrow uses the seller's active Funding Account. Creating an offer atomically moves the crypto amount from `available` to `held`; accepting an offer does not move funds. `mark-paid` records only the buyer's assertion that fiat was paid using the advertised off-platform method. Limiance does not custody or process that fiat payment.
+
+Clients discover unexpired offers with `GET /v2/p2p/offers` and use `GET /v2/p2p/trades` for their own history. Every mutation requires an `Idempotency-Key`. The seller can release a paid trade, while open offers and unpaid accepted trades are automatically refunded after their deadlines. Either participant can dispute an accepted or paid trade and attach immutable evidence references with a SHA-256 digest.
+
+Forced release or refund is a maker-checker operation: a `treasury_operator` proposes a resolution and a different `treasury_approver` executes it. Both decisions are written to immutable P2P events and the administrator audit log. Operations staff read the queue at `GET /v2/admin/p2p/disputes`.
+
 ## WebSocket
 
 Connect to `/v2/ws` (the compatibility endpoint `/ws/v2/market` is also served). Subscribe with:

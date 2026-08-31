@@ -21,6 +21,7 @@ import (
 	"github.com/limiance/backend/internal/marketdata"
 	"github.com/limiance/backend/internal/notifications"
 	"github.com/limiance/backend/internal/observability"
+	"github.com/limiance/backend/internal/p2p"
 	"github.com/limiance/backend/internal/phone"
 	"github.com/limiance/backend/internal/pnl"
 	"github.com/limiance/backend/internal/security/geetest"
@@ -146,6 +147,44 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 		mux.HandleFunc("POST /v1/auth/email/verify", emailVerificationHandler.Verify)
 		mux.HandleFunc("POST /v1/auth/email/resend", emailVerificationHandler.Resend)
 		mux.Handle("GET /v1/auth/session", requireSession(authService)(http.HandlerFunc(authHandler.Session)))
+		p2pService := p2p.NewService(p2p.NewPostgresStore(pool))
+		p2pHandler := NewP2PHandler(p2pService, logger)
+		p2pReadLimit := func(handler http.HandlerFunc) http.Handler {
+			return endpointRateLimit(apiLimiter, "p2p.read", 300, time.Minute, true, requireAccountSession(authService)(handler))
+		}
+		p2pWriteLimit := func(handler http.HandlerFunc) http.Handler {
+			return endpointRateLimit(apiLimiter, "p2p.write", 60, time.Minute, true, requireAccountSession(authService)(handler))
+		}
+		p2pAdminWriteLimit := func(handler http.HandlerFunc) http.Handler {
+			return endpointRateLimit(apiLimiter, "p2p.admin.write", 60, time.Minute, true, requireSession(authService)(handler))
+		}
+		mux.Handle("POST /v2/p2p/trades", p2pWriteLimit(p2pHandler.Create))
+		mux.Handle("GET /v2/p2p/offers", p2pReadLimit(p2pHandler.ListOpen))
+		mux.Handle("GET /v2/p2p/trades", p2pReadLimit(p2pHandler.List))
+		mux.Handle("GET /v2/p2p/trades/{trade_id}", p2pReadLimit(p2pHandler.Get))
+		mux.Handle("POST /v2/p2p/trades/{trade_id}/accept", p2pWriteLimit(p2pHandler.Accept))
+		mux.Handle("POST /v2/p2p/trades/{trade_id}/mark-paid", p2pWriteLimit(p2pHandler.MarkPaid))
+		mux.Handle("POST /v2/p2p/trades/{trade_id}/release", p2pWriteLimit(p2pHandler.Release))
+		mux.Handle("POST /v2/p2p/trades/{trade_id}/cancel", p2pWriteLimit(p2pHandler.Cancel))
+		mux.Handle("POST /v2/p2p/trades/{trade_id}/disputes", p2pWriteLimit(p2pHandler.Dispute))
+		mux.Handle("POST /v2/p2p/trades/{trade_id}/evidence", p2pWriteLimit(p2pHandler.Evidence))
+		mux.Handle("POST /v2/admin/p2p/trades/{trade_id}/resolutions", p2pAdminWriteLimit(p2pHandler.ProposeResolution))
+		mux.Handle("POST /v2/admin/p2p/resolutions/{resolution_id}/approve", p2pAdminWriteLimit(p2pHandler.ApproveResolution))
+		mux.Handle("GET /v2/admin/p2p/disputes", p2pAdminWriteLimit(p2pHandler.ListDisputes))
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-backgroundContext.Done():
+					return
+				case <-ticker.C:
+					if _, err := p2pService.Expire(backgroundContext, 100); err != nil && backgroundContext.Err() == nil {
+						logger.Error("P2P expiry sweep failed", "error", err)
+					}
+				}
+			}
+		}()
 		mux.Handle("POST /v1/auth/logout", requireSession(authService)(http.HandlerFunc(authHandler.Logout)))
 		mux.Handle("POST /v1/auth/freeze", requireSession(authService)(http.HandlerFunc(authHandler.Freeze)))
 		mux.Handle("POST /v1/auth/mfa/step-up", requireSession(authService)(http.HandlerFunc(authHandler.StepUp)))

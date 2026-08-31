@@ -9,6 +9,8 @@ servers:
 tags:
   - { name: Orders }
   - { name: Market }
+  - { name: P2P }
+  - { name: P2P Operations }
 paths:
   /orders:
     get:
@@ -132,6 +134,93 @@ paths:
       responses:
         '200': { description: Candles oldest first, content: { application/json: { schema: { type: object, required: [candles], properties: { candles: { type: array, items: { $ref: '#/components/schemas/Candle' } } } } } } }
         default: { $ref: '#/components/responses/Error' }
+  /p2p/trades:
+    get:
+      operationId: listP2PTrades
+      tags: [P2P]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Limit' }, { $ref: '#/components/parameters/Offset' }]
+      responses:
+        '200': { description: Participant P2P trades, content: { application/json: { schema: { type: object, required: [trades, limit, offset, has_more], properties: { trades: { type: array, items: { $ref: '#/components/schemas/P2PTrade' } }, limit: { type: integer }, offset: { type: integer }, has_more: { type: boolean } } } } } }
+        default: { $ref: '#/components/responses/Error' }
+    post:
+      operationId: createP2PTrade
+      tags: [P2P]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/P2PCreate' } } } }
+      responses:
+        '201': { description: Crypto reserved in seller Funding Account escrow, content: { application/json: { schema: { $ref: '#/components/schemas/P2PTrade' } } } }
+        '200': { description: Idempotent retry, content: { application/json: { schema: { $ref: '#/components/schemas/P2PTrade' } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /p2p/offers:
+    get:
+      operationId: listOpenP2POffers
+      tags: [P2P]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Limit' }, { $ref: '#/components/parameters/Offset' }]
+      responses:
+        '200': { description: Unexpired open offers, content: { application/json: { schema: { type: object, required: [offers, limit, offset, has_more], properties: { offers: { type: array, items: { $ref: '#/components/schemas/P2PTrade' } }, limit: { type: integer }, offset: { type: integer }, has_more: { type: boolean } } } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /p2p/trades/{trade_id}:
+    get:
+      operationId: getP2PTrade
+      tags: [P2P]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/P2PTradePath' }]
+      responses:
+        '200': { description: Participant-visible P2P trade, content: { application/json: { schema: { $ref: '#/components/schemas/P2PTrade' } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /p2p/trades/{trade_id}/accept:
+    post: { operationId: acceptP2PTrade, tags: [P2P], security: [{ sessionCookie: [] }], parameters: [{ $ref: '#/components/parameters/P2PTradePath' }, { $ref: '#/components/parameters/IdempotencyKey' }], responses: { '200': { description: Offer accepted, content: { application/json: { schema: { $ref: '#/components/schemas/P2PTrade' } } } }, default: { $ref: '#/components/responses/Error' } } }
+  /p2p/trades/{trade_id}/mark-paid:
+    post: { operationId: markP2PTradePaid, tags: [P2P], security: [{ sessionCookie: [] }], description: Records buyer confirmation of an off-platform fiat payment; no fiat is processed by Limiance., parameters: [{ $ref: '#/components/parameters/P2PTradePath' }, { $ref: '#/components/parameters/IdempotencyKey' }], responses: { '200': { description: Payment marked, content: { application/json: { schema: { $ref: '#/components/schemas/P2PTrade' } } } }, default: { $ref: '#/components/responses/Error' } } }
+  /p2p/trades/{trade_id}/release:
+    post: { operationId: releaseP2PEscrow, tags: [P2P], security: [{ sessionCookie: [] }], parameters: [{ $ref: '#/components/parameters/P2PTradePath' }, { $ref: '#/components/parameters/IdempotencyKey' }], responses: { '200': { description: Escrow released to buyer, content: { application/json: { schema: { $ref: '#/components/schemas/P2PTrade' } } } }, default: { $ref: '#/components/responses/Error' } } }
+  /p2p/trades/{trade_id}/cancel:
+    post: { operationId: cancelP2PTrade, tags: [P2P], security: [{ sessionCookie: [] }], parameters: [{ $ref: '#/components/parameters/P2PTradePath' }, { $ref: '#/components/parameters/IdempotencyKey' }], responses: { '200': { description: Open offer cancelled and escrow refunded, content: { application/json: { schema: { $ref: '#/components/schemas/P2PTrade' } } } }, default: { $ref: '#/components/responses/Error' } } }
+  /p2p/trades/{trade_id}/disputes:
+    post:
+      operationId: disputeP2PTrade
+      tags: [P2P]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/P2PTradePath' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [reason], properties: { reason: { type: string, minLength: 8, maxLength: 1000 } } } } } }
+      responses: { '200': { description: Trade disputed, content: { application/json: { schema: { $ref: '#/components/schemas/P2PTrade' } } } }, default: { $ref: '#/components/responses/Error' } }
+  /p2p/trades/{trade_id}/evidence:
+    post:
+      operationId: addP2PEvidence
+      tags: [P2P]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/P2PTradePath' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/P2PEvidence' } } } }
+      responses: { '201': { description: Immutable evidence reference recorded, content: { application/json: { schema: { $ref: '#/components/schemas/P2PTrade' } } } }, default: { $ref: '#/components/responses/Error' } }
+  /admin/p2p/trades/{trade_id}/resolutions:
+    post:
+      operationId: proposeP2PResolution
+      tags: [P2P Operations]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/P2PTradePath' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/P2PResolutionRequest' } } } }
+      responses: { '201': { description: Treasury operator resolution proposal, content: { application/json: { schema: { $ref: '#/components/schemas/P2PResolution' } } } }, default: { $ref: '#/components/responses/Error' } }
+  /admin/p2p/disputes:
+    get:
+      operationId: listP2PDisputes
+      tags: [P2P Operations]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Limit' }, { $ref: '#/components/parameters/Offset' }]
+      responses:
+        '200': { description: Treasury dispute queue, content: { application/json: { schema: { type: object, required: [disputes, limit, offset, has_more], properties: { disputes: { type: array, items: { $ref: '#/components/schemas/P2PTrade' } }, limit: { type: integer }, offset: { type: integer }, has_more: { type: boolean } } } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /admin/p2p/resolutions/{resolution_id}/approve:
+    post:
+      operationId: approveP2PResolution
+      tags: [P2P Operations]
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: resolution_id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      responses: { '200': { description: Distinct treasury approver executed force-release or refund, content: { application/json: { schema: { $ref: '#/components/schemas/P2PTrade' } } } }, default: { $ref: '#/components/responses/Error' } }
   /ws:
     get:
       operationId: marketWebSocket
@@ -157,6 +246,7 @@ components:
     PairQuery: { name: pair, in: query, required: false, schema: { $ref: '#/components/schemas/Pair' } }
     Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 1000, default: 100 } }
     Offset: { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+    P2PTradePath: { name: trade_id, in: path, required: true, schema: { type: string, format: uuid } }
   headers:
     RateLimitLimit: { description: Requests allowed in this window, schema: { type: integer } }
     RateLimitRemaining: { description: Requests remaining in this window, schema: { type: integer } }
@@ -169,6 +259,7 @@ components:
     Atomic: { type: string, pattern: '^[0-9]+$', examples: ['5000000000000'] }
     SignedAtomic: { type: string, pattern: '^-?[0-9]+$', examples: ['-20000000'] }
     Pair: { type: string, pattern: '^[A-Z0-9]{2,20}$', examples: [BTCUSDT] }
+    FiatDecimal: { type: string, pattern: '^[0-9]+(\.[0-9]{1,8})?$', examples: ['150000.00000000'] }
     Error:
       type: object
       additionalProperties: false
@@ -193,6 +284,51 @@ components:
         time_in_force: { type: string, enum: [GTC, IOC, FOK] }
         post_only: { type: boolean, default: false }
         reduce_only: { type: boolean, default: false }
+    P2PCreate:
+      type: object
+      additionalProperties: false
+      required: [asset, network, amount_atomic, fiat_currency, fiat_amount, payment_method, expires_in_seconds]
+      properties:
+        asset: { type: string }
+        network: { type: string }
+        amount_atomic: { $ref: '#/components/schemas/Atomic' }
+        fiat_currency: { type: string, pattern: '^[A-Z]{3}$' }
+        fiat_amount: { $ref: '#/components/schemas/FiatDecimal' }
+        payment_method: { type: string, minLength: 2, maxLength: 100 }
+        expires_in_seconds: { type: integer, minimum: 300, maximum: 604800 }
+    P2PTrade:
+      type: object
+      required: [id, asset, network, amount_atomic, fiat_currency, fiat_amount, payment_method, status, offer_expires_at, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        asset: { type: string }
+        network: { type: string }
+        amount_atomic: { $ref: '#/components/schemas/Atomic' }
+        fiat_currency: { type: string }
+        fiat_amount: { $ref: '#/components/schemas/FiatDecimal' }
+        payment_method: { type: string }
+        status: { type: string, enum: [open, accepted, paid, disputed, released, refunded, cancelled, expired] }
+        offer_expires_at: { type: string, format: date-time }
+        payment_deadline: { type: string, format: date-time }
+        accepted_at: { type: string, format: date-time }
+        paid_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    P2PEvidence:
+      type: object
+      additionalProperties: false
+      required: [evidence_type, object_key, sha256]
+      properties: { evidence_type: { type: string, minLength: 2, maxLength: 40 }, object_key: { type: string, minLength: 3, maxLength: 500 }, sha256: { type: string, pattern: '^[0-9a-f]{64}$' } }
+    P2PResolutionRequest:
+      type: object
+      additionalProperties: false
+      required: [action, reason]
+      properties: { action: { type: string, enum: [force_release, refund] }, reason: { type: string, minLength: 8, maxLength: 1000 } }
+    P2PResolution:
+      type: object
+      required: [id, trade_id, action, reason, proposed_by, status, created_at]
+      properties: { id: { type: string, format: uuid }, trade_id: { type: string, format: uuid }, action: { type: string, enum: [force_release, refund] }, reason: { type: string }, proposed_by: { type: string, format: uuid }, approved_by: { type: string, format: uuid }, status: { type: string, enum: [pending, approved, rejected] }, created_at: { type: string, format: date-time }, decided_at: { type: string, format: date-time } }
     Order:
       type: object
       required: [id, pair, side, type, quantity, filled_quantity, remaining_quantity, avg_price, time_in_force, status, created_at, updated_at]
