@@ -52,6 +52,8 @@ type Config struct {
 	TravelRuleEncryptionKey   string
 	TOTPEncryptionKey         string
 	BybitMarketDataBaseURL    string
+	CoinbaseMarketDataBaseURL string
+	KrakenMarketDataBaseURL   string
 	MatchingEngineOrderURL    string
 	MatchingEngineControlURL  string
 	MatchingEngineEventsURL   string
@@ -116,6 +118,8 @@ func Load() Config {
 		TravelRuleEncryptionKey:   strings.TrimSpace(os.Getenv("TRAVEL_RULE_ENCRYPTION_KEY")),
 		TOTPEncryptionKey:         strings.TrimSpace(os.Getenv("TOTP_ENCRYPTION_KEY")),
 		BybitMarketDataBaseURL:    value("BYBIT_MARKET_DATA_BASE_URL", "https://api.bybit.com"),
+		CoinbaseMarketDataBaseURL: value("COINBASE_MARKET_DATA_BASE_URL", "https://api.exchange.coinbase.com"),
+		KrakenMarketDataBaseURL:   value("KRAKEN_MARKET_DATA_BASE_URL", "https://api.kraken.com"),
 		MatchingEngineOrderURL:    value("MATCHING_ENGINE_ORDER_ENDPOINT", "tcp://127.0.0.1:5555"),
 		MatchingEngineControlURL:  value("MATCHING_ENGINE_CONTROL_ENDPOINT", "tcp://127.0.0.1:5556"),
 		MatchingEngineEventsURL:   value("MATCHING_ENGINE_EVENT_ENDPOINT", "tcp://127.0.0.1:5557"),

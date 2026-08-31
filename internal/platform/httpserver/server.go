@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/limiance/backend/internal/fees"
 	"github.com/limiance/backend/internal/kyc"
 	"github.com/limiance/backend/internal/marketdata"
+	"github.com/limiance/backend/internal/marketmaker"
 	"github.com/limiance/backend/internal/notifications"
 	"github.com/limiance/backend/internal/observability"
 	"github.com/limiance/backend/internal/p2p"
@@ -252,6 +254,30 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 			mux.Handle("GET /v2/orders/history", orderReadLimit(orderHandler.History))
 			mux.Handle("GET /v2/orders/{order_id}", orderReadLimit(orderHandler.Get))
 			mux.Handle("DELETE /v2/orders/{order_id}", orderWriteLimit(orderHandler.Cancel))
+			bybitFeed, bybitErr := marketdata.NewBybit(cfg.BybitMarketDataBaseURL, nil)
+			coinbaseFeed, coinbaseErr := marketdata.NewCoinbase(cfg.CoinbaseMarketDataBaseURL, nil)
+			krakenFeed, krakenErr := marketdata.NewKraken(cfg.KrakenMarketDataBaseURL, nil)
+			if bybitErr != nil || coinbaseErr != nil || krakenErr != nil {
+				logger.Error("internal market maker disabled: invalid feed configuration", "bybit_error", bybitErr, "coinbase_error", coinbaseErr, "kraken_error", krakenErr)
+			} else {
+				makerService := marketmaker.NewService(marketmaker.NewPostgresStore(pool), orderService, []marketmaker.NamedProvider{
+					{Name: "bybit", Provider: bybitFeed}, {Name: "coinbase", Provider: coinbaseFeed}, {Name: "kraken", Provider: krakenFeed},
+				})
+				go func() {
+					ticker := time.NewTicker(5 * time.Second)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-backgroundContext.Done():
+							return
+						case <-ticker.C:
+							if err := makerService.Cycle(backgroundContext); err != nil && !errors.Is(err, marketmaker.ErrDisabled) && !errors.Is(err, marketmaker.ErrKillSwitch) && backgroundContext.Err() == nil {
+								logger.Warn("internal market maker cycle halted", "error", err)
+							}
+						}
+					}
+				}()
+			}
 		}
 		mux.Handle("PUT /v1/user/preferences", requireSession(authService)(http.HandlerFunc(profileHandler.Preferences)))
 		feesHandler := NewFeesHandler(feeService)
