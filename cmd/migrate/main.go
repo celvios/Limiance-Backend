@@ -82,7 +82,7 @@ func applyOne(ctx context.Context, db interface {
 	err = tx.QueryRow(ctx, `SELECT checksum FROM schema_migrations WHERE name = $1`, item.name).Scan(&existing)
 	if err == nil {
 		if existing != checksum {
-			return fmt.Errorf("migration checksum changed after application")
+			return fmt.Errorf("migration checksum changed after application (stored=%s current=%s)", existing, checksum)
 		}
 		return tx.Commit(ctx)
 	}
