@@ -54,6 +54,8 @@ type Config struct {
 	BybitMarketDataBaseURL    string
 	CoinbaseMarketDataBaseURL string
 	KrakenMarketDataBaseURL   string
+	BinanceMarketDataBaseURL  string
+	GateMarketDataBaseURL     string
 	MatchingEngineOrderURL    string
 	MatchingEngineControlURL  string
 	MatchingEngineEventsURL   string
@@ -120,6 +122,8 @@ func Load() Config {
 		BybitMarketDataBaseURL:    value("BYBIT_MARKET_DATA_BASE_URL", "https://api.bybit.com"),
 		CoinbaseMarketDataBaseURL: value("COINBASE_MARKET_DATA_BASE_URL", "https://api.exchange.coinbase.com"),
 		KrakenMarketDataBaseURL:   value("KRAKEN_MARKET_DATA_BASE_URL", "https://api.kraken.com"),
+		BinanceMarketDataBaseURL:  value("BINANCE_MARKET_DATA_BASE_URL", "https://api.binance.com"),
+		GateMarketDataBaseURL:     value("GATE_MARKET_DATA_BASE_URL", "https://api.gateio.ws"),
 		MatchingEngineOrderURL:    value("MATCHING_ENGINE_ORDER_ENDPOINT", "tcp://127.0.0.1:5555"),
 		MatchingEngineControlURL:  value("MATCHING_ENGINE_CONTROL_ENDPOINT", "tcp://127.0.0.1:5556"),
 		MatchingEngineEventsURL:   value("MATCHING_ENGINE_EVENT_ENDPOINT", "tcp://127.0.0.1:5557"),

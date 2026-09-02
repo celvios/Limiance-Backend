@@ -257,11 +257,14 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 			bybitFeed, bybitErr := marketdata.NewBybit(cfg.BybitMarketDataBaseURL, nil)
 			coinbaseFeed, coinbaseErr := marketdata.NewCoinbase(cfg.CoinbaseMarketDataBaseURL, nil)
 			krakenFeed, krakenErr := marketdata.NewKraken(cfg.KrakenMarketDataBaseURL, nil)
-			if bybitErr != nil || coinbaseErr != nil || krakenErr != nil {
-				logger.Error("internal market maker disabled: invalid feed configuration", "bybit_error", bybitErr, "coinbase_error", coinbaseErr, "kraken_error", krakenErr)
+			binanceFeed, binanceErr := marketdata.NewBinance(cfg.BinanceMarketDataBaseURL, nil)
+			gateFeed, gateErr := marketdata.NewGate(cfg.GateMarketDataBaseURL, nil)
+			if bybitErr != nil || coinbaseErr != nil || krakenErr != nil || binanceErr != nil || gateErr != nil {
+				logger.Error("internal market maker disabled: invalid feed configuration", "bybit_error", bybitErr, "coinbase_error", coinbaseErr, "kraken_error", krakenErr, "binance_error", binanceErr, "gate_error", gateErr)
 			} else {
 				makerService := marketmaker.NewService(marketmaker.NewPostgresStore(pool), orderService, []marketmaker.NamedProvider{
 					{Name: "bybit", Provider: bybitFeed}, {Name: "coinbase", Provider: coinbaseFeed}, {Name: "kraken", Provider: krakenFeed},
+					{Name: "binance", Provider: binanceFeed}, {Name: "gate", Provider: gateFeed},
 				})
 				go func() {
 					ticker := time.NewTicker(5 * time.Second)
