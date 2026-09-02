@@ -11,6 +11,7 @@ tags:
   - { name: Market }
   - { name: P2P }
   - { name: P2P Operations }
+  - { name: Market Maker Operations }
 paths:
   /orders:
     get:
@@ -221,6 +222,28 @@ paths:
         - { name: resolution_id, in: path, required: true, schema: { type: string, format: uuid } }
         - { $ref: '#/components/parameters/IdempotencyKey' }
       responses: { '200': { description: Distinct treasury approver executed force-release or refund, content: { application/json: { schema: { $ref: '#/components/schemas/P2PTrade' } } } }, default: { $ref: '#/components/responses/Error' } }
+  /admin/market-maker/activations:
+    post:
+      operationId: proposeMarketMakerActivation
+      tags: [Market Maker Operations]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/MarketMakerActivationInput' } } } }
+      responses: { '201': { description: Treasury operator proposed an audited dry-run configuration or live release, content: { application/json: { schema: { $ref: '#/components/schemas/MarketMakerActivation' } } } }, default: { $ref: '#/components/responses/Error' } }
+  /admin/market-maker/activations/{request_id}/approve:
+    post:
+      operationId: approveMarketMakerActivation
+      tags: [Market Maker Operations]
+      security: [{ sessionCookie: [] }]
+      parameters: [{ name: request_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '200': { description: Distinct treasury approver atomically applied the request, content: { application/json: { schema: { $ref: '#/components/schemas/MarketMakerActivation' } } } }, default: { $ref: '#/components/responses/Error' } }
+  /admin/market-maker/emergency-stop:
+    post:
+      operationId: emergencyStopMarketMaker
+      tags: [Market Maker Operations]
+      security: [{ sessionCookie: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [reason], properties: { reason: { type: string, minLength: 8, maxLength: 1000 } } } } } }
+      responses: { '200': { description: Kill switch engaged immediately by a treasury operator or approver }, default: { $ref: '#/components/responses/Error' } }
   /ws:
     get:
       operationId: marketWebSocket
@@ -329,6 +352,42 @@ components:
       type: object
       required: [id, trade_id, action, reason, proposed_by, status, created_at]
       properties: { id: { type: string, format: uuid }, trade_id: { type: string, format: uuid }, action: { type: string, enum: [force_release, refund] }, reason: { type: string }, proposed_by: { type: string, format: uuid }, approved_by: { type: string, format: uuid }, status: { type: string, enum: [pending, approved, rejected] }, created_at: { type: string, format: date-time }, decided_at: { type: string, format: date-time } }
+    MarketMakerActivationInput:
+      type: object
+      additionalProperties: false
+      required: [action, reason]
+      properties:
+        action: { type: string, enum: [configure_dry_run, release_live] }
+        market_maker_email: { type: string, format: email }
+        inventory: { type: array, items: { $ref: '#/components/schemas/MarketMakerInventoryGrant' } }
+        pairs: { type: array, items: { $ref: '#/components/schemas/MarketMakerPairPolicy' } }
+        reference_evidence: { type: boolean }
+        emergency_stop_tested: { type: boolean }
+        ledger_reconciled: { type: boolean }
+        order_lifecycle_tested: { type: boolean }
+        reason: { type: string, minLength: 8, maxLength: 1000 }
+    MarketMakerInventoryGrant:
+      type: object
+      additionalProperties: false
+      required: [asset, source_account_id, amount_atomic]
+      properties: { asset: { type: string }, source_account_id: { type: string, format: uuid }, amount_atomic: { $ref: '#/components/schemas/Atomic' } }
+    MarketMakerPairPolicy:
+      type: object
+      additionalProperties: false
+      required: [pair, spread_bps, quantity_atomic, max_base_inventory_atomic, max_quote_notional_atomic, max_daily_loss_atomic, max_divergence_bps, stale_after_seconds]
+      properties:
+        pair: { $ref: '#/components/schemas/Pair' }
+        spread_bps: { type: integer, minimum: 2, maximum: 10000 }
+        quantity_atomic: { $ref: '#/components/schemas/Atomic' }
+        max_base_inventory_atomic: { $ref: '#/components/schemas/Atomic' }
+        max_quote_notional_atomic: { $ref: '#/components/schemas/Atomic' }
+        max_daily_loss_atomic: { $ref: '#/components/schemas/Atomic' }
+        max_divergence_bps: { type: integer, minimum: 1, maximum: 10000 }
+        stale_after_seconds: { type: integer, minimum: 1, maximum: 300 }
+    MarketMakerActivation:
+      type: object
+      required: [id, action, status, proposed_by, created_at]
+      properties: { id: { type: string, format: uuid }, action: { type: string }, status: { type: string, enum: [pending, approved, rejected] }, proposed_by: { type: string, format: uuid }, approved_by: { type: string, format: uuid }, created_at: { type: string, format: date-time } }
     Order:
       type: object
       required: [id, pair, side, type, quantity, filled_quantity, remaining_quantity, avg_price, time_in_force, status, created_at, updated_at]

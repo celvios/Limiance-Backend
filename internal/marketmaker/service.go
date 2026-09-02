@@ -34,7 +34,7 @@ func (service *Service) Cycle(ctx context.Context) error {
 		return ErrDisabled
 	}
 	if control.KillSwitch {
-		return ErrKillSwitch
+		return service.stopExisting(ctx, control)
 	}
 	if control.UserID == "" || control.AccountID == "" {
 		return fmt.Errorf("%w: internal account is not configured", ErrRiskLimit)
@@ -53,6 +53,24 @@ func (service *Service) Cycle(ctx context.Context) error {
 		}
 	}
 	return cycleErr
+}
+
+func (service *Service) stopExisting(ctx context.Context, control Control) error {
+	if control.UserID == "" || control.AccountID == "" {
+		return ErrKillSwitch
+	}
+	configs, err := service.store.ListConfigs(ctx)
+	if err != nil {
+		return errors.Join(ErrKillSwitch, err)
+	}
+	var stopErr error
+	now := service.now().UTC()
+	for _, config := range configs {
+		if config.Enabled {
+			stopErr = errors.Join(stopErr, service.cancelExisting(ctx, control, config.Pair, now))
+		}
+	}
+	return errors.Join(ErrKillSwitch, stopErr)
 }
 
 func (service *Service) quotePair(ctx context.Context, control Control, config Config) error {
@@ -123,6 +141,7 @@ func (service *Service) cancelExisting(ctx context.Context, control Control, pai
 
 func (service *Service) Reference(ctx context.Context, config Config, now time.Time) (Quote, error) {
 	type result struct {
+		name   string
 		ticker marketdata.SpotTicker
 		err    error
 	}
@@ -133,17 +152,25 @@ func (service *Service) Reference(ctx context.Context, config Config, now time.T
 			continue
 		}
 		wait.Add(1)
-		go func(provider marketdata.SpotProvider) {
+		go func(name string, provider marketdata.SpotProvider) {
 			defer wait.Done()
 			ticker, err := provider.SpotTicker(ctx, config.Pair)
-			results <- result{ticker, err}
-		}(source.Provider)
+			results <- result{name, ticker, err}
+		}(source.Name, source.Provider)
 	}
 	wait.Wait()
 	close(results)
 	values := make([]*big.Int, 0, len(service.providers))
+	seenProviders := make(map[string]struct{}, len(service.providers))
 	latest := time.Time{}
 	for result := range results {
+		name := strings.ToLower(strings.TrimSpace(result.name))
+		if name == "" {
+			continue
+		}
+		if _, duplicate := seenProviders[name]; duplicate {
+			continue
+		}
 		if result.err != nil || result.ticker.ObservedAt.IsZero() || now.Sub(result.ticker.ObservedAt) > config.StaleAfter || result.ticker.ObservedAt.After(now.Add(time.Second)) {
 			continue
 		}
@@ -152,6 +179,7 @@ func (service *Service) Reference(ctx context.Context, config Config, now time.T
 		if bidErr != nil || askErr != nil || bid.Sign() <= 0 || ask.Cmp(bid) < 0 {
 			continue
 		}
+		seenProviders[name] = struct{}{}
 		values = append(values, new(big.Int).Quo(new(big.Int).Add(bid, ask), big.NewInt(2)))
 		if result.ticker.ObservedAt.After(latest) {
 			latest = result.ticker.ObservedAt

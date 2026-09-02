@@ -175,11 +175,37 @@ func TestKillSwitchAndLossLimitHaltBeforeOrderPlacement(t *testing.T) {
 	if err := service.Cycle(context.Background()); !errors.Is(err, ErrKillSwitch) {
 		t.Fatalf("kill switch: %v", err)
 	}
+	if gateway.canceled != 0 {
+		t.Fatal("kill switch should have no orders to cancel")
+	}
 	store.control.KillSwitch = false
 	if err := service.Cycle(context.Background()); !errors.Is(err, ErrRiskLimit) {
 		t.Fatalf("loss limit: %v", err)
 	}
 	if len(gateway.placed) != 0 {
 		t.Fatal("risk halt placed orders")
+	}
+}
+
+func TestKillSwitchCancelsOutstandingQuotes(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	store := &storeStub{control: Control{Enabled: true, KillSwitch: true, UserID: "user", AccountID: "account"}, configs: []Config{baseConfig()}}
+	gateway := &gatewayStub{orders: []trading.Order{{ID: "open-quote"}}}
+	service := NewService(store, gateway, nil)
+	service.now = func() time.Time { return now }
+	if err := service.Cycle(context.Background()); !errors.Is(err, ErrKillSwitch) {
+		t.Fatalf("kill switch: %v", err)
+	}
+	if gateway.canceled != 3 {
+		t.Fatalf("expected cancellation through each active-status query, got %d", gateway.canceled)
+	}
+}
+
+func TestReferenceRequiresIndependentProviderNames(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	feed := providerStub{ticker: marketdata.SpotTicker{Symbol: "BTCUSDT", Bid: "100.00", Ask: "100.00", ObservedAt: now}}
+	service := NewService(&storeStub{}, &gatewayStub{}, []NamedProvider{{Name: "venue", Provider: feed}, {Name: "VENUE", Provider: feed}})
+	if _, err := service.Reference(context.Background(), baseConfig(), now); !errors.Is(err, ErrReferenceStale) {
+		t.Fatalf("duplicate venue counted independently: %v", err)
 	}
 }

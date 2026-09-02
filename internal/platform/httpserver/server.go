@@ -173,6 +173,10 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 		mux.Handle("POST /v2/admin/p2p/trades/{trade_id}/resolutions", p2pAdminWriteLimit(p2pHandler.ProposeResolution))
 		mux.Handle("POST /v2/admin/p2p/resolutions/{resolution_id}/approve", p2pAdminWriteLimit(p2pHandler.ApproveResolution))
 		mux.Handle("GET /v2/admin/p2p/disputes", p2pAdminWriteLimit(p2pHandler.ListDisputes))
+		marketMakerAdmin := NewMarketMakerAdminHandler(marketmaker.NewActivationService(pool), logger)
+		mux.Handle("POST /v2/admin/market-maker/activations", p2pAdminWriteLimit(marketMakerAdmin.Propose))
+		mux.Handle("POST /v2/admin/market-maker/activations/{request_id}/approve", p2pAdminWriteLimit(marketMakerAdmin.Approve))
+		mux.Handle("POST /v2/admin/market-maker/emergency-stop", p2pAdminWriteLimit(marketMakerAdmin.EmergencyStop))
 		go func() {
 			ticker := time.NewTicker(30 * time.Second)
 			defer ticker.Stop()
