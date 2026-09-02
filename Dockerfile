@@ -3,7 +3,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN for command in api migrate outbox event-router deposits withdrawals notifications deposit-reconcile-sepolia bootstrap-platform-admin enable-staging-conversions fee-refresh ledger-audit market-data trade-settlement; do \
+RUN for command in api migrate outbox event-router deposits withdrawals notifications deposit-reconcile-sepolia bootstrap-platform-admin enable-staging-conversions fee-refresh ledger-audit market-data trade-settlement staging-market-maker-setup; do \
         CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o "/limiance/${command}" "./cmd/${command}"; \
     done
 
