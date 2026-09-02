@@ -26,6 +26,8 @@ type Config struct {
 	Pair                   string
 	Enabled                bool
 	PriceScale             int
+	QuantityScale          int
+	QuoteScale             int
 	PriceTickAtomic        string
 	SpreadBPS              int64
 	QuantityAtomic         string

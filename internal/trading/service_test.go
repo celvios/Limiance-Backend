@@ -20,6 +20,10 @@ type storeStub struct {
 	lastFailure   string
 }
 
+func (*storeStub) PairRules(context.Context, string) (PairRules, error) {
+	return PairRules{PriceScale: 8, QuantityScale: 8, QuoteScale: 8}, nil
+}
+
 func (store *storeStub) CreateOrder(_ context.Context, command CreateOrderCommand) (Order, error) {
 	return store.create(command)
 }
@@ -146,6 +150,13 @@ func TestOrderGatewayPlacesLimitBuy(t *testing.T) {
 	}
 	if ingress.Price != 5000000000000 || ingress.Quantity != 1000000 || ingress.FeeTier != 2 {
 		t.Fatalf("wrong ingress values: %#v", ingress)
+	}
+}
+
+func TestReservationUsesPairScales(t *testing.T) {
+	amount, all, err := reservation("BUY", "LIMIT", 300000000000, 1000000000000000000, 0, PairRules{PriceScale: 8, QuantityScale: 18, QuoteScale: 6})
+	if err != nil || all || amount != "3000000000" {
+		t.Fatalf("scaled reservation amount=%q all=%v err=%v", amount, all, err)
 	}
 }
 

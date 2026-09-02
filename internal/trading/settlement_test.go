@@ -63,6 +63,13 @@ func TestSettlementIntegerFeeCalculation(t *testing.T) {
 	}
 }
 
+func TestQuoteAmountUsesPairScales(t *testing.T) {
+	notional, err := QuoteAmountForScales(300000000000, 1000000000000000000, PairRules{PriceScale: 8, QuantityScale: 18, QuoteScale: 6})
+	if err != nil || notional.String() != "3000000000" {
+		t.Fatalf("scaled quote amount=%v err=%v", notional, err)
+	}
+}
+
 func TestSettlementConsumerRequestsReplayOnSequenceGap(t *testing.T) {
 	event := validTradeEvent()
 	payload, err := protocol.EncodeTradeEvent(event)

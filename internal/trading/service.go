@@ -14,8 +14,6 @@ import (
 	"github.com/limiance/backend/internal/trading/protocol"
 )
 
-const atomicScale = uint64(100000000)
-
 type Service struct {
 	store      Store
 	fees       FeeResolver
@@ -46,8 +44,12 @@ func (service *Service) PlaceOrder(ctx context.Context, input PlaceOrderInput) (
 	if feeTier.Level < 0 || feeTier.Level > math.MaxUint8 || feeTier.MakerFeeBPS < math.MinInt16 || feeTier.MakerFeeBPS > math.MaxInt16 || feeTier.TakerFeeBPS < math.MinInt16 || feeTier.TakerFeeBPS > math.MaxInt16 {
 		return Order{}, fmt.Errorf("%w: fee tier is outside the wire contract", ErrInvalidOrder)
 	}
+	rules, err := service.store.PairRules(ctx, normalized.Pair)
+	if err != nil {
+		return Order{}, err
+	}
 	engineOrderType := effectiveOrderType(normalized.Type)
-	holdAmount, holdAll, err := reservation(normalized.Side, engineOrderType, price, quantity, feeTier.TakerFeeBPS)
+	holdAmount, holdAll, err := reservation(normalized.Side, engineOrderType, price, quantity, feeTier.TakerFeeBPS, rules)
 	if err != nil {
 		return Order{}, err
 	}
@@ -318,14 +320,17 @@ func parseAtomic(value string, allowEmpty bool) (uint64, error) {
 	return amount, nil
 }
 
-func reservation(side, orderType string, price, quantity uint64, takerFeeBPS int) (string, bool, error) {
+func reservation(side, orderType string, price, quantity uint64, takerFeeBPS int, rules PairRules) (string, bool, error) {
 	if side == "SELL" {
 		return strconv.FormatUint(quantity, 10), false, nil
 	}
 	if orderType == "MARKET" {
 		return "", true, nil
 	}
-	notional := ceilProductDiv(price, quantity, atomicScale)
+	notional, err := quoteAmount(price, quantity, rules, true)
+	if err != nil {
+		return "", false, err
+	}
 	fee := new(big.Int)
 	if takerFeeBPS > 0 {
 		fee = ceilBigProductDiv(notional, big.NewInt(int64(takerFeeBPS)), big.NewInt(10000))
@@ -335,6 +340,19 @@ func reservation(side, orderType string, price, quantity uint64, takerFeeBPS int
 		return "", false, fmt.Errorf("%w: reservation exceeds unsigned 64-bit atomic units", ErrInvalidOrder)
 	}
 	return total.String(), false, nil
+}
+
+func quoteAmount(price, quantity uint64, rules PairRules, roundUp bool) (*big.Int, error) {
+	if price == 0 || quantity == 0 || rules.PriceScale < 0 || rules.PriceScale > 18 || rules.QuantityScale < 0 || rules.QuantityScale > 18 || rules.QuoteScale < 0 || rules.QuoteScale > 18 {
+		return nil, fmt.Errorf("%w: pair scales are invalid", ErrInvalidOrder)
+	}
+	numerator := new(big.Int).Mul(new(big.Int).SetUint64(price), new(big.Int).SetUint64(quantity))
+	numerator.Mul(numerator, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(rules.QuoteScale)), nil))
+	divisor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(rules.PriceScale+rules.QuantityScale)), nil)
+	if roundUp {
+		return ceilBigProductDiv(numerator, big.NewInt(1), divisor), nil
+	}
+	return new(big.Int).Quo(numerator, divisor), nil
 }
 
 func ceilProductDiv(left, right, divisor uint64) *big.Int {

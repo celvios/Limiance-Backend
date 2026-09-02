@@ -67,7 +67,19 @@ func (gateway *gatewayStub) CancelOrder(context.Context, trading.CancelOrderInpu
 }
 
 func baseConfig() Config {
-	return Config{Pair: "BTCUSDT", Enabled: true, PriceScale: 2, PriceTickAtomic: "1", SpreadBPS: 20, QuantityAtomic: "1000000", MaxBaseInventoryAtomic: "10000000", MaxQuoteNotionalAtomic: "2000000", MaxDailyLossAtomic: "1000000", MaxDivergenceBPS: 100, StaleAfter: 5 * time.Second}
+	return Config{Pair: "BTCUSDT", Enabled: true, PriceScale: 2, QuantityScale: 6, QuoteScale: 6, PriceTickAtomic: "1", SpreadBPS: 20, QuantityAtomic: "1000000", MaxBaseInventoryAtomic: "10000000", MaxQuoteNotionalAtomic: "200000000", MaxDailyLossAtomic: "1000000", MaxDivergenceBPS: 100, StaleAfter: 5 * time.Second}
+}
+
+func TestRiskNotionalUsesPairAndAssetScales(t *testing.T) {
+	config := baseConfig()
+	quote := Quote{AskPriceAtomic: "10000", QuantityAtomic: config.QuantityAtomic}
+	if err := checkRisk(config, RiskSnapshot{BaseInventoryAtomic: "2000000", DailyPnLQuoteAtomic: "0"}, quote); err != nil {
+		t.Fatal(err)
+	}
+	config.MaxQuoteNotionalAtomic = "99999999"
+	if err := checkRisk(config, RiskSnapshot{BaseInventoryAtomic: "2000000", DailyPnLQuoteAtomic: "0"}, quote); !errors.Is(err, ErrRiskLimit) {
+		t.Fatalf("expected scaled notional limit, got %v", err)
+	}
 }
 func providers(at time.Time, prices ...string) []NamedProvider {
 	result := make([]NamedProvider, 0, len(prices))

@@ -144,11 +144,17 @@ func (requester *ControlReplayRequester) RequestReplay(_ context.Context, pair s
 }
 
 func QuoteAmount(price, quantity uint64) (*big.Int, error) {
+	return QuoteAmountForScales(price, quantity, PairRules{PriceScale: 8, QuantityScale: 8, QuoteScale: 8})
+}
+
+func QuoteAmountForScales(price, quantity uint64, rules PairRules) (*big.Int, error) {
 	if price == 0 || quantity == 0 {
 		return nil, ErrSettlementInvalid
 	}
-	product := new(big.Int).Mul(new(big.Int).SetUint64(price), new(big.Int).SetUint64(quantity))
-	quote := new(big.Int).Quo(product, new(big.Int).SetUint64(atomicScale))
+	quote, err := quoteAmount(price, quantity, rules, false)
+	if err != nil {
+		return nil, ErrSettlementInvalid
+	}
 	if quote.Sign() <= 0 {
 		return nil, fmt.Errorf("%w: trade notional rounds to zero", ErrSettlementInvalid)
 	}

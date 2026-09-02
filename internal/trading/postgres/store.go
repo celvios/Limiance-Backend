@@ -25,6 +25,17 @@ func New(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
 
+func (store *Store) PairRules(ctx context.Context, pair string) (trading.PairRules, error) {
+	var rules trading.PairRules
+	err := store.pool.QueryRow(ctx, `SELECT p.price_scale,p.quantity_scale,q.decimals
+		FROM trading_pairs p JOIN assets q ON q.id=p.quote_asset_id WHERE p.symbol=$1`, pair).
+		Scan(&rules.PriceScale, &rules.QuantityScale, &rules.QuoteScale)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return trading.PairRules{}, trading.ErrPairUnavailable
+	}
+	return rules, err
+}
+
 func (store *Store) CreateOrder(ctx context.Context, input trading.CreateOrderCommand) (trading.Order, error) {
 	if store.pool == nil || input.OrderID == "" || input.UserID == "" || input.AccountID == "" || input.IdempotencyKey == "" || len(input.EnginePayload) == 0 {
 		return trading.Order{}, fmt.Errorf("%w: incomplete persistence command", trading.ErrInvalidOrder)

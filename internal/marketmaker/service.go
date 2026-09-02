@@ -14,8 +14,6 @@ import (
 	"github.com/limiance/backend/internal/trading"
 )
 
-const quoteScale = int64(100000000)
-
 type Service struct {
 	store     Store
 	gateway   Gateway
@@ -210,11 +208,24 @@ func checkRisk(config Config, risk RiskSnapshot, quote Quote) error {
 	if pnl.Sign() < 0 && new(big.Int).Abs(new(big.Int).Set(pnl)).Cmp(maxLoss) >= 0 {
 		return ErrRiskLimit
 	}
-	notional := ceilQuo(new(big.Int).Mul(price, quantity), big.NewInt(quoteScale))
+	numerator := new(big.Int).Mul(price, quantity)
+	numerator.Mul(numerator, pow10(config.QuoteScale))
+	divisor := pow10(config.PriceScale + config.QuantityScale)
+	if divisor.Sign() <= 0 {
+		return ErrRiskLimit
+	}
+	notional := ceilQuo(numerator, divisor)
 	if notional.Cmp(maxNotional) > 0 {
 		return ErrRiskLimit
 	}
 	return nil
+}
+
+func pow10(scale int) *big.Int {
+	if scale < 0 || scale > 36 {
+		return new(big.Int)
+	}
+	return new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(scale)), nil)
 }
 
 func decimalToAtomic(value string, scale int) (*big.Int, error) {

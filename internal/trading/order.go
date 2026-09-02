@@ -99,6 +99,12 @@ type OrderFilter struct {
 	Offset  int
 }
 
+type PairRules struct {
+	PriceScale    int
+	QuantityScale int
+	QuoteScale    int
+}
+
 type CancelOrderInput struct {
 	UserID         string
 	AccountID      string
@@ -116,6 +122,7 @@ type CancelOrderCommand struct {
 }
 
 type Store interface {
+	PairRules(context.Context, string) (PairRules, error)
 	CreateOrder(context.Context, CreateOrderCommand) (Order, error)
 	ListOrders(context.Context, string, string, OrderFilter) ([]Order, error)
 	GetOrder(context.Context, string, string, string) (Order, error)

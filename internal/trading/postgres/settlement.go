@@ -110,7 +110,10 @@ func (store *Store) settleTradeOnce(ctx context.Context, event protocol.TradeEve
 	}
 
 	var baseAssetID, quoteAssetID string
-	if err = tx.QueryRow(ctx, `SELECT base_asset_id::text,quote_asset_id::text FROM trading_pairs WHERE symbol=$1`, event.Pair).Scan(&baseAssetID, &quoteAssetID); err != nil {
+	var rules trading.PairRules
+	if err = tx.QueryRow(ctx, `SELECT p.base_asset_id::text,p.quote_asset_id::text,p.price_scale,p.quantity_scale,q.decimals
+		FROM trading_pairs p JOIN assets q ON q.id=p.quote_asset_id WHERE p.symbol=$1`, event.Pair).
+		Scan(&baseAssetID, &quoteAssetID, &rules.PriceScale, &rules.QuantityScale, &rules.QuoteScale); err != nil {
 		return trading.Trade{}, err
 	}
 	orders, err := lockSettlementOrders(ctx, tx, event.MakerOrderID, event.TakerOrderID)
@@ -126,7 +129,7 @@ func (store *Store) settleTradeOnce(ctx context.Context, event protocol.TradeEve
 		return trading.Trade{}, trading.ErrSettlementInvalid
 	}
 
-	notional, err := trading.QuoteAmount(event.Price, event.Quantity)
+	notional, err := trading.QuoteAmountForScales(event.Price, event.Quantity, rules)
 	if err != nil {
 		return trading.Trade{}, err
 	}
