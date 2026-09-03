@@ -35,6 +35,7 @@ type PairPolicy struct {
 
 type InventoryGrant struct {
 	Asset           string `json:"asset"`
+	Network         string `json:"network"`
 	SourceAccountID string `json:"source_account_id"`
 	AmountAtomic    string `json:"amount_atomic"`
 }
@@ -78,17 +79,28 @@ func validateActivation(input ActivationInput) error {
 		}
 		return nil
 	}
-	if input.Action != "configure_dry_run" || strings.TrimSpace(input.MarketMakerEmail) == "" || len(input.Inventory) == 0 || len(input.Pairs) == 0 {
+	if input.Action != "configure_reference_only" && input.Action != "configure_dry_run" {
+		return ErrActivationInput
+	}
+	if strings.TrimSpace(input.MarketMakerEmail) == "" || len(input.Pairs) == 0 {
+		return ErrActivationInput
+	}
+	if input.Action == "configure_reference_only" && len(input.Inventory) != 0 {
+		return ErrActivationInput
+	}
+	if input.Action == "configure_dry_run" && len(input.Inventory) == 0 {
 		return ErrActivationInput
 	}
 	seenPairs, seenAssets := map[string]bool{}, map[string]bool{}
 	for _, item := range input.Inventory {
 		amount, ok := new(big.Int).SetString(item.AmountAtomic, 10)
 		asset := strings.ToUpper(strings.TrimSpace(item.Asset))
-		if !ok || amount.Sign() <= 0 || asset == "" || item.SourceAccountID == "" || seenAssets[asset] {
+		network := strings.ToLower(strings.TrimSpace(item.Network))
+		assetRoute := asset + "/" + network
+		if !ok || amount.Sign() <= 0 || asset == "" || network == "" || item.SourceAccountID == "" || seenAssets[assetRoute] {
 			return ErrActivationInput
 		}
-		seenAssets[asset] = true
+		seenAssets[assetRoute] = true
 	}
 	for _, pair := range input.Pairs {
 		name := strings.ToUpper(strings.TrimSpace(pair.Pair))
@@ -183,10 +195,14 @@ func (s *ActivationService) Approve(ctx context.Context, actorID, requestID stri
 	if err = json.Unmarshal(payload, &input); err != nil {
 		return ActivationRequest{}, err
 	}
-	if request.Action == "configure_dry_run" {
+	if request.Action == "configure_reference_only" {
+		err = s.applyReferenceOnly(ctx, tx, input)
+	} else if request.Action == "configure_dry_run" {
 		err = s.applyDryRun(ctx, tx, request.ID, input)
-	} else {
+	} else if request.Action == "release_live" {
 		err = s.applyLive(ctx, tx, input)
+	} else {
+		err = ErrActivationState
 	}
 	if err != nil {
 		return ActivationRequest{}, err
@@ -206,27 +222,17 @@ func (s *ActivationService) Approve(ctx context.Context, actorID, requestID stri
 }
 
 func (s *ActivationService) applyDryRun(ctx context.Context, tx pgx.Tx, requestID string, input ActivationInput) error {
-	var userID, accountID string
-	err := tx.QueryRow(ctx, `SELECT u.id::text,(array_agg(a.id))[1]::text FROM users u JOIN accounts a ON a.user_id=u.id AND a.kind='uta' AND a.status='active' WHERE lower(u.email)=lower($1) AND u.status='active' GROUP BY u.id HAVING count(a.id)=1`, input.MarketMakerEmail).Scan(&userID, &accountID)
+	userID, accountID, err := resolveMarketMakerIdentity(ctx, tx, input.MarketMakerEmail)
 	if err != nil {
-		return fmt.Errorf("%w: dedicated active user with one active UTA required", ErrActivationState)
-	}
-	if _, err = tx.Exec(ctx, `UPDATE market_maker_configs SET enabled=FALSE,updated_at=now()`); err != nil {
 		return err
 	}
-	for _, p := range input.Pairs {
-		tag, e := tx.Exec(ctx, `UPDATE market_maker_configs SET enabled=TRUE,spread_bps=$2,quantity_atomic=$3::numeric,max_base_inventory_atomic=$4::numeric,max_quote_notional_atomic=$5::numeric,max_daily_loss_atomic=$6::numeric,max_divergence_bps=$7,stale_after_seconds=$8,updated_at=now() WHERE pair=$1`, strings.ToUpper(p.Pair), p.SpreadBPS, p.QuantityAtomic, p.MaxBaseInventoryAtomic, p.MaxQuoteNotionalAtomic, p.MaxDailyLossAtomic, p.MaxDivergenceBPS, p.StaleAfterSeconds)
-		if e != nil {
-			return e
-		}
-		if tag.RowsAffected() != 1 {
-			return ErrActivationState
-		}
+	if err = applyPairPolicies(ctx, tx, input.Pairs); err != nil {
+		return err
 	}
 	for _, g := range input.Inventory {
 		var assetID, journalID string
 		var sourceOK bool
-		if err = tx.QueryRow(ctx, `SELECT (array_agg(id))[1]::text FROM assets WHERE symbol=$1 AND status='enabled' GROUP BY symbol HAVING count(*)=1`, strings.ToUpper(g.Asset)).Scan(&assetID); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT id::text FROM assets WHERE symbol=$1 AND network=$2 AND status='enabled'`, strings.ToUpper(strings.TrimSpace(g.Asset)), strings.ToLower(strings.TrimSpace(g.Network))).Scan(&assetID); err != nil {
 			return ErrActivationState
 		}
 		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM accounts WHERE id=$1 AND kind='system' AND status='active')`, g.SourceAccountID).Scan(&sourceOK); err != nil || !sourceOK {
@@ -253,12 +259,58 @@ func (s *ActivationService) applyDryRun(ctx context.Context, tx pgx.Tx, requestI
 	return err
 }
 
+func (s *ActivationService) applyReferenceOnly(ctx context.Context, tx pgx.Tx, input ActivationInput) error {
+	userID, accountID, err := resolveMarketMakerIdentity(ctx, tx, input.MarketMakerEmail)
+	if err != nil {
+		return err
+	}
+	if err = applyPairPolicies(ctx, tx, input.Pairs); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `UPDATE market_maker_control SET enabled=TRUE,dry_run=TRUE,kill_switch=FALSE,user_id=$1,account_id=$2,updated_at=now() WHERE singleton=TRUE`, userID, accountID)
+	return err
+}
+
+func resolveMarketMakerIdentity(ctx context.Context, tx pgx.Tx, email string) (string, string, error) {
+	var userID, accountID string
+	err := tx.QueryRow(ctx, `SELECT u.id::text,(array_agg(a.id))[1]::text FROM users u JOIN accounts a ON a.user_id=u.id AND a.kind='uta' AND a.status='active' WHERE lower(u.email)=lower($1) AND u.status='active' GROUP BY u.id HAVING count(a.id)=1`, email).Scan(&userID, &accountID)
+	if err != nil {
+		return "", "", fmt.Errorf("%w: dedicated active user with one active UTA required", ErrActivationState)
+	}
+	return userID, accountID, nil
+}
+
+func applyPairPolicies(ctx context.Context, tx pgx.Tx, pairs []PairPolicy) error {
+	if _, err := tx.Exec(ctx, `UPDATE market_maker_configs SET enabled=FALSE,updated_at=now()`); err != nil {
+		return err
+	}
+	for _, p := range pairs {
+		tag, e := tx.Exec(ctx, `UPDATE market_maker_configs SET enabled=TRUE,spread_bps=$2,quantity_atomic=$3::numeric,max_base_inventory_atomic=$4::numeric,max_quote_notional_atomic=$5::numeric,max_daily_loss_atomic=$6::numeric,max_divergence_bps=$7,stale_after_seconds=$8,updated_at=now() WHERE pair=$1`, strings.ToUpper(p.Pair), p.SpreadBPS, p.QuantityAtomic, p.MaxBaseInventoryAtomic, p.MaxQuoteNotionalAtomic, p.MaxDailyLossAtomic, p.MaxDivergenceBPS, p.StaleAfterSeconds)
+		if e != nil {
+			return e
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrActivationState
+		}
+	}
+	return nil
+}
+
 func (s *ActivationService) applyLive(ctx context.Context, tx pgx.Tx, input ActivationInput) error {
 	if !input.ReferenceEvidence || !input.EmergencyStopTested || !input.LedgerReconciled || !input.OrderLifecycleTested {
 		return ErrActivationState
 	}
 	var ready bool
-	err := tx.QueryRow(ctx, `SELECT enabled AND dry_run AND NOT kill_switch AND user_id IS NOT NULL AND account_id IS NOT NULL AND EXISTS(SELECT 1 FROM market_maker_configs WHERE enabled) FROM market_maker_control WHERE singleton=TRUE`).Scan(&ready)
+	err := tx.QueryRow(ctx, `WITH latest AS (
+		SELECT id,action FROM market_maker_activation_requests WHERE status='approved' ORDER BY decided_at DESC NULLS LAST,id DESC LIMIT 1
+	) SELECT c.enabled AND c.dry_run AND NOT c.kill_switch AND c.user_id IS NOT NULL AND c.account_id IS NOT NULL
+		AND EXISTS(SELECT 1 FROM market_maker_configs WHERE enabled)
+		AND COALESCE((SELECT action='configure_dry_run' FROM latest),FALSE)
+		AND NOT EXISTS(SELECT 1 FROM market_maker_configs m JOIN trading_pairs p ON p.symbol=m.pair WHERE m.enabled AND p.status<>'active')
+		AND NOT EXISTS(SELECT 1 FROM market_maker_configs m JOIN trading_pairs p ON p.symbol=m.pair WHERE m.enabled AND (
+			NOT EXISTS(SELECT 1 FROM market_maker_inventory_journals i JOIN latest l ON l.id=i.request_id WHERE i.asset_id=p.base_asset_id)
+			OR NOT EXISTS(SELECT 1 FROM market_maker_inventory_journals i JOIN latest l ON l.id=i.request_id WHERE i.asset_id=p.quote_asset_id)))
+		FROM market_maker_control c WHERE c.singleton=TRUE`).Scan(&ready)
 	if err != nil {
 		return err
 	}

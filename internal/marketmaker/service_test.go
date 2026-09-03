@@ -23,6 +23,7 @@ type storeStub struct {
 	control   Control
 	configs   []Config
 	risk      RiskSnapshot
+	riskCalls int
 	claims    map[string]bool
 	decisions []Decision
 }
@@ -30,6 +31,7 @@ type storeStub struct {
 func (store *storeStub) LoadControl(context.Context) (Control, error)  { return store.control, nil }
 func (store *storeStub) ListConfigs(context.Context) ([]Config, error) { return store.configs, nil }
 func (store *storeStub) Risk(context.Context, string, string) (RiskSnapshot, error) {
+	store.riskCalls++
 	return store.risk, nil
 }
 func (store *storeStub) ClaimCommand(_ context.Context, key, _, _, _, _ string, _ bool) (bool, error) {
@@ -67,7 +69,7 @@ func (gateway *gatewayStub) CancelOrder(context.Context, trading.CancelOrderInpu
 }
 
 func baseConfig() Config {
-	return Config{Pair: "BTCUSDT", Enabled: true, PriceScale: 2, QuantityScale: 6, QuoteScale: 6, PriceTickAtomic: "1", SpreadBPS: 20, QuantityAtomic: "1000000", MaxBaseInventoryAtomic: "10000000", MaxQuoteNotionalAtomic: "200000000", MaxDailyLossAtomic: "1000000", MaxDivergenceBPS: 100, StaleAfter: 5 * time.Second}
+	return Config{Pair: "BTCUSDT", PairStatus: "active", Enabled: true, PriceScale: 2, QuantityScale: 6, QuoteScale: 6, PriceTickAtomic: "1", SpreadBPS: 20, QuantityAtomic: "1000000", MaxBaseInventoryAtomic: "10000000", MaxQuoteNotionalAtomic: "200000000", MaxDailyLossAtomic: "1000000", MaxDivergenceBPS: 100, StaleAfter: 5 * time.Second}
 }
 
 func TestRiskNotionalUsesPairAndAssetScales(t *testing.T) {
@@ -127,6 +129,29 @@ func TestDryRunClaimsDeterministicCommandsWithoutGatewayOrders(t *testing.T) {
 	}
 	if len(store.claims) != 2 || len(gateway.placed) != 0 || store.decisions[len(store.decisions)-1].Status != "duplicate_cycle" {
 		t.Fatalf("claims=%d orders=%d decisions=%+v", len(store.claims), len(gateway.placed), store.decisions)
+	}
+	if store.riskCalls != 0 {
+		t.Fatalf("reference-only dry run read funded risk %d times", store.riskCalls)
+	}
+}
+
+func TestDryRunEvaluatesHaltedPairButLiveRejectsIt(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 2, 0, time.UTC)
+	config := baseConfig()
+	config.PairStatus = "halted"
+	store := &storeStub{control: Control{Enabled: true, DryRun: true, UserID: "user", AccountID: "account"}, configs: []Config{config}}
+	gateway := &gatewayStub{}
+	service := NewService(store, gateway, providers(now, "100.00", "100.00"))
+	service.now = func() time.Time { return now }
+	if err := service.Cycle(context.Background()); err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	store.control.DryRun = false
+	if err := service.Cycle(context.Background()); !errors.Is(err, ErrRiskLimit) {
+		t.Fatalf("live halted pair: %v", err)
+	}
+	if len(gateway.placed) != 0 {
+		t.Fatal("halted pair placed a live order")
 	}
 }
 

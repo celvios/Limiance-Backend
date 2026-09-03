@@ -20,11 +20,18 @@ func main() {
 		log.Fatal(err)
 	}
 	defer pool.Close()
-	provider, err := custody.NewFireblocksClient(custody.FireblocksConfig{APIKey: cfg.FireblocksAPIKey, PrivateKey: cfg.FireblocksPrivateKey, BaseURL: cfg.FireblocksBaseURL})
+	var provider custody.Provider
+	switch cfg.CustodyMode {
+	case "self_custody_testnet":
+		provider, err = custody.NewSelfCustodyTestnetClient(cfg.SelfCustodySignerURL, nil)
+	default:
+		provider, err = custody.NewFireblocksClient(custody.FireblocksConfig{APIKey: cfg.FireblocksAPIKey, PrivateKey: cfg.FireblocksPrivateKey, BaseURL: cfg.FireblocksBaseURL})
+	}
 	if err != nil {
 		log.Fatal(err)
 	}
-	worker := withdrawals.NewWorker(datamanager.New(pool), provider, provider.ProviderID())
+	policy := custody.RoutePolicy{Mode: cfg.CustodyMode, SelfCustodyTestnetEnabled: cfg.SelfCustodyTestnetEnabled, TestnetOnly: cfg.Environment == "staging"}
+	worker := withdrawals.NewWorker(datamanager.New(pool), provider, provider.ProviderID(), policy)
 	for {
 		if _, err := worker.RunOnce(ctx); err != nil {
 			log.Printf("withdrawal worker failed: %v", err)

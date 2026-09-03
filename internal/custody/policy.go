@@ -13,9 +13,13 @@ var ErrNetworkNotApproved = errors.New("custody network is not approved")
 type RoutePolicy struct {
 	Mode                      string
 	SelfCustodyTestnetEnabled bool
+	TestnetOnly               bool
 }
 
 func (p RoutePolicy) Validate(network string) error {
+	if p.TestnetOnly && !isApprovedSelfCustodyTestnet(network) {
+		return ErrNetworkNotApproved
+	}
 	if strings.ToLower(strings.TrimSpace(p.Mode)) != "self_custody_testnet" {
 		return nil
 	}

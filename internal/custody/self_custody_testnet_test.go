@@ -3,6 +3,7 @@ package custody
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -19,6 +20,15 @@ func TestSelfCustodyTestnetClientUsesIsolatedSignerContract(t *testing.T) {
 			_, _ = w.Write([]byte(`{"id":"wallet-1"}`))
 		case "/v1/testnet/wallets/wallet-1/addresses":
 			_, _ = w.Write([]byte(`{"id":"address-1","address":"0x1111111111111111111111111111111111111111","tag":""}`))
+		case "/v1/testnet/withdrawals":
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["source_wallet_id"] != "wallet-1" || body["asset_id"] != "ETH_SEPOLIA" || body["amount"] != "0.25" || body["external_id"] != "withdrawal-1" {
+				t.Fatalf("withdrawal body = %#v", body)
+			}
+			_, _ = w.Write([]byte(`{"provider_transaction_id":"testnet-transaction-1","status":"submitted"}`))
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -37,6 +47,10 @@ func TestSelfCustodyTestnetClientUsesIsolatedSignerContract(t *testing.T) {
 	address, err := provider.GetDepositAddress(context.Background(), wallet.ID, "ETH_SEPOLIA", "address-request-1")
 	if err != nil || address.ID != "address-1" {
 		t.Fatalf("address = %#v, %v", address, err)
+	}
+	withdrawal, err := provider.CreateWithdrawal(context.Background(), WithdrawalRequest{SourceVaultID: wallet.ID, AssetID: "ETH_SEPOLIA", Destination: "0x2222222222222222222222222222222222222222", Amount: "0.25", ExternalID: "withdrawal-1"})
+	if err != nil || withdrawal.ProviderTransactionID != "testnet-transaction-1" {
+		t.Fatalf("withdrawal = %#v, %v", withdrawal, err)
 	}
 }
 

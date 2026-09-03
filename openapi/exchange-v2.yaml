@@ -357,7 +357,7 @@ components:
       additionalProperties: false
       required: [action, reason]
       properties:
-        action: { type: string, enum: [configure_dry_run, release_live] }
+        action: { type: string, enum: [configure_reference_only, configure_dry_run, release_live] }
         market_maker_email: { type: string, format: email }
         inventory: { type: array, items: { $ref: '#/components/schemas/MarketMakerInventoryGrant' } }
         pairs: { type: array, items: { $ref: '#/components/schemas/MarketMakerPairPolicy' } }
@@ -369,8 +369,8 @@ components:
     MarketMakerInventoryGrant:
       type: object
       additionalProperties: false
-      required: [asset, source_account_id, amount_atomic]
-      properties: { asset: { type: string }, source_account_id: { type: string, format: uuid }, amount_atomic: { $ref: '#/components/schemas/Atomic' } }
+      required: [asset, network, source_account_id, amount_atomic]
+      properties: { asset: { type: string }, network: { type: string }, source_account_id: { type: string, format: uuid }, amount_atomic: { $ref: '#/components/schemas/Atomic' } }
     MarketMakerPairPolicy:
       type: object
       additionalProperties: false

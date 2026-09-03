@@ -14,9 +14,8 @@ import (
 )
 
 // SelfCustodyTestnetClient connects only to the isolated Limiance signer
-// service. It has no private-key or KMS permission and is deliberately limited
-// to address issuance at this stage; future transaction signing remains an
-// independently authorised worker-only operation.
+// service. It has no private-key or KMS permission; address issuance and
+// independently authorised worker-only withdrawal requests cross this boundary.
 type SelfCustodyTestnetClient struct {
 	baseURL *url.URL
 	client  *http.Client
@@ -69,8 +68,29 @@ func (c *SelfCustodyTestnetClient) GetDepositAddress(ctx context.Context, wallet
 	return DepositAddress{ID: response.ID, Address: response.Address, Tag: response.Tag}, nil
 }
 
-func (*SelfCustodyTestnetClient) CreateWithdrawal(context.Context, WithdrawalRequest) (Withdrawal, error) {
-	return Withdrawal{}, errors.New("self-custody testnet withdrawals are not enabled")
+func (c *SelfCustodyTestnetClient) CreateWithdrawal(ctx context.Context, input WithdrawalRequest) (Withdrawal, error) {
+	if input.SourceVaultID == "" || input.AssetID == "" || input.Destination == "" || input.Amount == "" || input.ExternalID == "" {
+		return Withdrawal{}, errors.New("source wallet, asset, destination, amount, and external ID are required")
+	}
+	var response struct {
+		ProviderTransactionID string `json:"provider_transaction_id"`
+		Status                string `json:"status"`
+	}
+	payload := map[string]string{
+		"source_wallet_id": input.SourceVaultID,
+		"asset_id":         input.AssetID,
+		"destination":      input.Destination,
+		"destination_tag":  input.DestinationTag,
+		"amount":           input.Amount,
+		"external_id":      input.ExternalID,
+	}
+	if err := c.do(ctx, http.MethodPost, "/v1/testnet/withdrawals", payload, &response); err != nil {
+		return Withdrawal{}, err
+	}
+	if strings.TrimSpace(response.ProviderTransactionID) == "" {
+		return Withdrawal{}, errors.New("self-custody signer did not return a withdrawal transaction ID")
+	}
+	return Withdrawal{ProviderTransactionID: response.ProviderTransactionID, Status: response.Status}, nil
 }
 
 func (c *SelfCustodyTestnetClient) do(ctx context.Context, method, path string, input any, output any) error {

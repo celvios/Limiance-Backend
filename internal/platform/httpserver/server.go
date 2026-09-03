@@ -332,12 +332,13 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 				logger.Error("fireblocks client initialization failed", "error", err)
 			}
 		}
-		depositHandler := NewDepositHandler(custody.NewService(data, custodyProvider, custody.RoutePolicy{Mode: cfg.CustodyMode, SelfCustodyTestnetEnabled: cfg.SelfCustodyTestnetEnabled}), logger)
+		custodyPolicy := custody.RoutePolicy{Mode: cfg.CustodyMode, SelfCustodyTestnetEnabled: cfg.SelfCustodyTestnetEnabled, TestnetOnly: cfg.Environment == "staging"}
+		depositHandler := NewDepositHandler(custody.NewService(data, custodyProvider, custodyPolicy), logger)
 		mux.Handle("POST /v1/deposits/addresses", requireSession(authService)(http.HandlerFunc(depositHandler.Address)))
 		mux.Handle("POST /v1/wallet/deposit-addresses", requireSession(authService)(http.HandlerFunc(depositHandler.Address)))
 		depositHistoryHandler := NewDepositHistoryHandler(deposits.NewHistoryService(data), logger)
 		mux.Handle("GET /v1/deposits", requireSession(authService)(http.HandlerFunc(depositHistoryHandler.List)))
-		withdrawalHandler := NewWithdrawalHandler(withdrawals.NewService(data), logger, cfg.WithdrawalAddressCooldown, cfg.TravelRuleEncryptionKey)
+		withdrawalHandler := NewWithdrawalHandler(withdrawals.NewService(data, custodyPolicy), logger, cfg.WithdrawalAddressCooldown, cfg.TravelRuleEncryptionKey)
 		mux.Handle("POST /v1/withdrawals", requireSession(authService)(requireWithdrawalStepUp(authService, data, http.HandlerFunc(withdrawalHandler.Request))))
 		mux.Handle("GET /v1/withdrawals", requireSession(authService)(http.HandlerFunc(withdrawalHandler.History)))
 		mux.Handle("POST /v1/wallet/withdrawals", requireSession(authService)(requireWithdrawalStepUp(authService, data, http.HandlerFunc(withdrawalHandler.Request))))

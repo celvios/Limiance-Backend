@@ -24,6 +24,7 @@ type Control struct {
 
 type Config struct {
 	Pair                   string
+	PairStatus             string
 	Enabled                bool
 	PriceScale             int
 	QuantityScale          int

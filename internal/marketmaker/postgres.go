@@ -37,11 +37,11 @@ func (store *PostgresStore) LoadControl(ctx context.Context) (Control, error) {
 }
 
 func (store *PostgresStore) ListConfigs(ctx context.Context) ([]Config, error) {
-	rows, err := store.pool.Query(ctx, `SELECT c.pair,c.enabled,p.price_scale,p.quantity_scale,q.decimals,p.price_tick_atomic::text,c.spread_bps,c.quantity_atomic::text,
+	rows, err := store.pool.Query(ctx, `SELECT c.pair,p.status,c.enabled,p.price_scale,p.quantity_scale,q.decimals,p.price_tick_atomic::text,c.spread_bps,c.quantity_atomic::text,
 		c.max_base_inventory_atomic::text,c.max_quote_notional_atomic::text,c.max_daily_loss_atomic::text,
 		c.max_divergence_bps,c.stale_after_seconds
 		FROM market_maker_configs c JOIN trading_pairs p ON p.symbol=c.pair JOIN assets q ON q.id=p.quote_asset_id
-		WHERE p.status='active' ORDER BY c.pair`)
+		ORDER BY c.pair`)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +50,7 @@ func (store *PostgresStore) ListConfigs(ctx context.Context) ([]Config, error) {
 	for rows.Next() {
 		var config Config
 		var staleSeconds int
-		if err = rows.Scan(&config.Pair, &config.Enabled, &config.PriceScale, &config.QuantityScale, &config.QuoteScale, &config.PriceTickAtomic, &config.SpreadBPS, &config.QuantityAtomic,
+		if err = rows.Scan(&config.Pair, &config.PairStatus, &config.Enabled, &config.PriceScale, &config.QuantityScale, &config.QuoteScale, &config.PriceTickAtomic, &config.SpreadBPS, &config.QuantityAtomic,
 			&config.MaxBaseInventoryAtomic, &config.MaxQuoteNotionalAtomic, &config.MaxDailyLossAtomic, &config.MaxDivergenceBPS, &staleSeconds); err != nil {
 			return nil, err
 		}

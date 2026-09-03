@@ -12,14 +12,24 @@ type CustodySubmitter interface {
 	CreateWithdrawal(context.Context, custody.WithdrawalRequest) (custody.Withdrawal, error)
 }
 
-type Worker struct {
-	data       *datamanager.Manager
-	provider   CustodySubmitter
-	providerID string
+type WithdrawalData interface {
+	ApprovedWithdrawals(context.Context, string, int) ([]datamanager.WithdrawalForCustody, error)
+	MarkWithdrawalSubmitted(context.Context, string, string) error
 }
 
-func NewWorker(data *datamanager.Manager, provider CustodySubmitter, providerID string) *Worker {
-	return &Worker{data: data, provider: provider, providerID: providerID}
+type Worker struct {
+	data       WithdrawalData
+	provider   CustodySubmitter
+	providerID string
+	policy     custody.RoutePolicy
+}
+
+func NewWorker(data WithdrawalData, provider CustodySubmitter, providerID string, policies ...custody.RoutePolicy) *Worker {
+	policy := custody.RoutePolicy{}
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
+	return &Worker{data: data, provider: provider, providerID: providerID, policy: policy}
 }
 
 func (w *Worker) RunOnce(ctx context.Context) (int, error) {
@@ -32,6 +42,9 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 	}
 	processed := 0
 	for _, item := range items {
+		if err := w.policy.Validate(item.Network); err != nil {
+			return processed, err
+		}
 		amount, err := custody.AtomicToProviderAmount(item.AmountAtomic, item.AssetDecimals)
 		if err != nil {
 			return processed, err

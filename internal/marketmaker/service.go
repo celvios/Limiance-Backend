@@ -75,18 +75,25 @@ func (service *Service) stopExisting(ctx context.Context, control Control) error
 
 func (service *Service) quotePair(ctx context.Context, control Control, config Config) error {
 	now := service.now().UTC()
+	if !control.DryRun && config.PairStatus != "active" {
+		err := fmt.Errorf("%w: pair is not active", ErrRiskLimit)
+		_ = service.store.RecordDecision(ctx, Decision{Pair: config.Pair, Status: "halted", Reason: err.Error(), At: now})
+		return err
+	}
 	quote, err := service.Reference(ctx, config, now)
 	if err != nil {
 		_ = service.store.RecordDecision(ctx, Decision{Pair: config.Pair, Status: "halted", Reason: err.Error(), At: now})
 		return err
 	}
-	risk, err := service.store.Risk(ctx, control.AccountID, config.Pair)
-	if err != nil {
-		return err
-	}
-	if err = checkRisk(config, risk, quote); err != nil {
-		_ = service.store.RecordDecision(ctx, Decision{Pair: config.Pair, Status: "halted", Reason: err.Error(), ReferencePriceAtomic: quote.ReferencePriceAtomic, At: now})
-		return err
+	if !control.DryRun {
+		risk, riskErr := service.store.Risk(ctx, control.AccountID, config.Pair)
+		if riskErr != nil {
+			return riskErr
+		}
+		if err = checkRisk(config, risk, quote); err != nil {
+			_ = service.store.RecordDecision(ctx, Decision{Pair: config.Pair, Status: "halted", Reason: err.Error(), ReferencePriceAtomic: quote.ReferencePriceAtomic, At: now})
+			return err
+		}
 	}
 	commands := []struct{ key, side, price string }{
 		{fmt.Sprintf("market-maker:%s:%d:buy", config.Pair, now.Truncate(5*time.Second).Unix()), "BUY", quote.BidPriceAtomic},

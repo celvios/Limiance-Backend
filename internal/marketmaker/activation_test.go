@@ -8,8 +8,32 @@ import (
 func validDryRunActivation() ActivationInput {
 	return ActivationInput{
 		Action: "configure_dry_run", MarketMakerEmail: "maker@example.com", Reason: "approved staging inventory", IdempotencyKey: "activation-1",
-		Inventory: []InventoryGrant{{Asset: "USDT", SourceAccountID: "treasury", AmountAtomic: "100000000"}},
+		Inventory: []InventoryGrant{{Asset: "USDT", Network: "ethereum_sepolia", SourceAccountID: "treasury", AmountAtomic: "100000000"}},
 		Pairs:     []PairPolicy{{Pair: "BTCUSDT", SpreadBPS: 30, QuantityAtomic: "1000", MaxBaseInventoryAtomic: "10000", MaxQuoteNotionalAtomic: "500000000", MaxDailyLossAtomic: "1000000", MaxDivergenceBPS: 100, StaleAfterSeconds: 10}},
+	}
+}
+
+func validReferenceOnlyActivation() ActivationInput {
+	input := validDryRunActivation()
+	input.Action = "configure_reference_only"
+	input.Inventory = nil
+	input.Reason = "evaluate independent staging references"
+	return input
+}
+
+func TestReferenceOnlyActivationRequiresNoInventory(t *testing.T) {
+	input := validReferenceOnlyActivation()
+	if err := validateActivation(input); err != nil {
+		t.Fatal(err)
+	}
+	input.Inventory = []InventoryGrant{{Asset: "USDT", Network: "ethereum_sepolia", SourceAccountID: "treasury", AmountAtomic: "1"}}
+	if err := validateActivation(input); !errors.Is(err, ErrActivationInput) {
+		t.Fatalf("reference-only inventory: %v", err)
+	}
+	input = validDryRunActivation()
+	input.Inventory = nil
+	if err := validateActivation(input); !errors.Is(err, ErrActivationInput) {
+		t.Fatalf("funded dry-run without inventory: %v", err)
 	}
 }
 
@@ -51,7 +75,7 @@ func TestLiveReleaseRequiresAllIndependentEvidence(t *testing.T) {
 }
 
 func TestLiveReleaseCannotMutateInventoryOrPairPolicy(t *testing.T) {
-	input := ActivationInput{Action: "release_live", Reason: "dry run evidence approved", IdempotencyKey: "live-1", ReferenceEvidence: true, EmergencyStopTested: true, LedgerReconciled: true, OrderLifecycleTested: true, Inventory: []InventoryGrant{{Asset: "BTC"}}}
+	input := ActivationInput{Action: "release_live", Reason: "dry run evidence approved", IdempotencyKey: "live-1", ReferenceEvidence: true, EmergencyStopTested: true, LedgerReconciled: true, OrderLifecycleTested: true, Inventory: []InventoryGrant{{Asset: "BTC", Network: "bitcoin_testnet4"}}}
 	if err := validateActivation(input); !errors.Is(err, ErrActivationInput) {
 		t.Fatalf("live mutation: %v", err)
 	}

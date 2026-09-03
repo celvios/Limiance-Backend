@@ -1,0 +1,8 @@
+ALTER TABLE market_maker_activation_requests
+    DROP CONSTRAINT market_maker_activation_requests_action_check;
+
+ALTER TABLE market_maker_activation_requests
+    ADD CONSTRAINT market_maker_activation_requests_action_check
+    CHECK (action IN ('configure_dry_run','release_live'));
+
+COMMENT ON TABLE market_maker_activation_requests IS 'Maker-checker requests for dry-run configuration and live release.';

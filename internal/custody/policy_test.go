@@ -16,3 +16,13 @@ func TestRoutePolicyFailsClosedForSelfCustody(t *testing.T) {
 		t.Fatalf("disabled testnet error = %v, want %v", err, ErrNetworkNotApproved)
 	}
 }
+
+func TestStagingPolicyRejectsMainnetForEveryProvider(t *testing.T) {
+	policy := RoutePolicy{Mode: "fireblocks", TestnetOnly: true}
+	if err := policy.Validate("ethereum"); err != ErrNetworkNotApproved {
+		t.Fatalf("mainnet error = %v, want %v", err, ErrNetworkNotApproved)
+	}
+	if err := policy.Validate("ethereum_sepolia"); err != nil {
+		t.Fatalf("testnet error = %v", err)
+	}
+}
