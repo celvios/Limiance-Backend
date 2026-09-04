@@ -13,9 +13,10 @@ The v2 market, order, and P2P contracts are deployed. The matching engine, settl
 Spot execution is not yet open for customer money:
 
 - every market currently reports `status: "halted"`;
-- the internal market maker remains disabled, dry-run, and kill-switched;
-- its dedicated UTA, approved inventory, and per-pair risk limits have not been configured;
-- tickers therefore correctly return zero prices and zero volume until real trades exist.
+- the internal market maker evaluates 18 approved pairs in reference-only dry-run after distinct maker-checker approval;
+- its dedicated UTA has no inventory and reference-only commands never reach the matching engine;
+- ticker trade fields therefore correctly return zero prices and zero volume until real trades exist;
+- `reference_price`, `reference_observed_at`, and `reference_status` expose the independent-venue median without fabricating a trade.
 
 Frontend development can proceed against the deployed contracts. Gate order entry when a market is halted and never replace zero exchange data with invented trades.
 
@@ -101,6 +102,8 @@ Build market tables as follows:
 - Top losers: exclude zero-volume markets, then sort `BigInt(change_bps_24h)` ascending.
 - Top volume: sort `BigInt(quote_volume_24h)` descending.
 - New or inactive markets: retain them in the catalog but show `--` instead of a fabricated percentage when `sequence_id === 0`.
+- A zero-trade market may display `reference_price` as its current indicative price when `reference_status === "fresh"`. Poll REST tickers for reference updates; reference cycles do not publish trade WebSocket events. Never copy it into `last_price`, volume, candles, or 24-hour change.
+- The API suppresses reference values when stopped, disabled, expired, or awaiting a decision after configuration. `reference_observed_at` is the accepted decision timestamp, not an exchange-provided timestamp.
 - Disable the trade form whenever catalog status is `halted`.
 
 The order-book level tuple is `[price_atomic, quantity_atomic, order_count]`.

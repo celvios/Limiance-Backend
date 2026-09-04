@@ -31,12 +31,13 @@ func (stub marketReaderStub) RecentTrades(context.Context, string, int) ([]marke
 	return []marketdata.Trade{}, nil
 }
 func (stub marketReaderStub) Ticker(context.Context, string, time.Time) (marketdata.Ticker, error) {
-	return marketdata.Ticker{Pair: "BTCUSDT", SequenceID: 1, LastPrice: "100", High24H: "110", Low24H: "90", Volume24H: "5", Change24H: "10", ChangeBPS24H: "1111"}, nil
+	observedAt := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	return marketdata.Ticker{Pair: "BTCUSDT", SequenceID: 1, LastPrice: "100", High24H: "110", Low24H: "90", Volume24H: "5", QuoteVolume24H: "500", Change24H: "10", ChangeBPS24H: "1111", ReferencePrice: "101", ReferenceObservedAt: &observedAt, ReferenceStatus: "fresh"}, nil
 }
 func (stub marketReaderStub) Tickers(context.Context, time.Time) ([]marketdata.Ticker, error) {
 	return []marketdata.Ticker{
-		{Pair: "BTCUSDT", LastPrice: "100", Change24H: "10", ChangeBPS24H: "1111"},
-		{Pair: "ETHUSDT", LastPrice: "50", Change24H: "-5", ChangeBPS24H: "-909"},
+		{Pair: "BTCUSDT", LastPrice: "100", Change24H: "10", ChangeBPS24H: "1111", ReferencePrice: "101", ReferenceStatus: "fresh"},
+		{Pair: "ETHUSDT", LastPrice: "50", Change24H: "-5", ChangeBPS24H: "-909", ReferencePrice: "51", ReferenceStatus: "fresh"},
 	}, nil
 }
 func (stub marketReaderStub) MinuteCandles(context.Context, string, time.Time, int) ([]marketdata.Candle, error) {
@@ -78,7 +79,7 @@ func TestAllTickersReturnsRankingReadyIntegerChanges(t *testing.T) {
 		t.Fatalf("tickers returned %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, expected := range []string{`"pair":"BTCUSDT"`, `"change_bps_24h":"1111"`, `"pair":"ETHUSDT"`, `"change_bps_24h":"-909"`} {
+	for _, expected := range []string{`"pair":"BTCUSDT"`, `"change_bps_24h":"1111"`, `"reference_price":"101"`, `"reference_status":"fresh"`, `"pair":"ETHUSDT"`, `"change_bps_24h":"-909"`} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("missing %s in %s", expected, body)
 		}

@@ -29,6 +29,7 @@ func TestMarketDataReadModelIsSequencedIdempotentAndIntegerOnly(t *testing.T) {
 	fixture := fmt.Sprintf("M%07X", time.Now().UnixNano()&0xfffffff)
 	base, quote := fixture+"B", fixture+"Q"
 	pair := base + quote
+	start := time.Date(2026, 8, 29, 10, 0, 5, 0, time.UTC)
 	var baseID, quoteID string
 	if err = pool.QueryRow(ctx, `INSERT INTO assets(symbol,network,decimals,status) VALUES($1,$2,8,'enabled') RETURNING id::text`, base, fixture).Scan(&baseID); err != nil {
 		t.Fatal(err)
@@ -39,16 +40,33 @@ func TestMarketDataReadModelIsSequencedIdempotentAndIntegerOnly(t *testing.T) {
 	if _, err = pool.Exec(ctx, `INSERT INTO trading_pairs(symbol,base_asset_id,quote_asset_id,status) VALUES($1,$2,$3,'active')`, pair, baseID, quoteID); err != nil {
 		t.Fatal(err)
 	}
+	referenceObservedAt := start.Add(time.Hour - time.Second)
+	if _, err = pool.Exec(ctx, `INSERT INTO market_maker_risk_state(pair,last_reference_price_atomic,last_decision,updated_at) VALUES($1,50500,'dry_run',$2)`, pair, referenceObservedAt); err != nil {
+		t.Fatal(err)
+	}
 	defer func() {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM market_trade_events WHERE pair=$1`, pair)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM market_candles_1m WHERE pair=$1`, pair)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM market_stream_sequences WHERE pair=$1`, pair)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM market_maker_risk_state WHERE pair=$1`, pair)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM trading_pairs WHERE symbol=$1`, pair)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM assets WHERE id=ANY($1::uuid[])`, []string{baseID, quoteID})
 	}()
+	var controlEnabled, controlStopped bool
+	var controlUpdated time.Time
+	if err = pool.QueryRow(ctx, `SELECT enabled,kill_switch,updated_at FROM market_maker_control WHERE singleton`).Scan(&controlEnabled, &controlStopped, &controlUpdated); err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Exec(context.Background(), `UPDATE market_maker_control SET enabled=$1,kill_switch=$2,updated_at=$3 WHERE singleton`, controlEnabled, controlStopped, controlUpdated)
+	if _, err = pool.Exec(ctx, `UPDATE market_maker_control SET enabled=TRUE,kill_switch=FALSE,updated_at=$1 WHERE singleton`, start); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO market_maker_configs(pair,enabled,updated_at) VALUES($1,TRUE,$2)`, pair, start); err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Exec(context.Background(), `DELETE FROM market_maker_configs WHERE pair=$1`, pair)
 
 	store := marketdata.NewPostgresStore(pool)
-	start := time.Date(2026, 8, 29, 10, 0, 5, 0, time.UTC)
 	first := marketdata.Trade{Pair: pair, SequenceID: 1, Timestamp: start, PriceAtomic: "50000", QuantityAtomic: "2", QuoteAtomic: "100000", Side: "BUY", PayloadHash: sha256.Sum256([]byte("trade-1"))}
 	early := first
 	early.SequenceID = 2
@@ -89,7 +107,7 @@ func TestMarketDataReadModelIsSequencedIdempotentAndIntegerOnly(t *testing.T) {
 		t.Fatalf("integer candle mismatch: %+v", candle)
 	}
 	ticker, err := store.Ticker(ctx, pair, start.Add(time.Hour))
-	if err != nil || ticker.LastPrice != "49000" || ticker.High24H != "51000" || ticker.Low24H != "49000" || ticker.Volume24H != "9" || ticker.QuoteVolume24H != "451000" || ticker.Change24H != "-1000" || ticker.ChangeBPS24H != "-200" {
+	if err != nil || ticker.LastPrice != "49000" || ticker.High24H != "51000" || ticker.Low24H != "49000" || ticker.Volume24H != "9" || ticker.QuoteVolume24H != "451000" || ticker.Change24H != "-1000" || ticker.ChangeBPS24H != "-200" || ticker.ReferencePrice != "50500" || ticker.ReferenceStatus != "fresh" || ticker.ReferenceObservedAt == nil || !ticker.ReferenceObservedAt.Equal(referenceObservedAt) {
 		t.Fatalf("ticker mismatch: %+v err=%v", ticker, err)
 	}
 	tickers, err := store.Tickers(ctx, start.Add(time.Hour))
@@ -99,7 +117,7 @@ func TestMarketDataReadModelIsSequencedIdempotentAndIntegerOnly(t *testing.T) {
 	foundFixture, foundEmptyCatalogPair := false, false
 	for _, item := range tickers {
 		if item.Pair == pair {
-			foundFixture = item.LastPrice == "49000" && item.ChangeBPS24H == "-200"
+			foundFixture = item.LastPrice == "49000" && item.ChangeBPS24H == "-200" && item.ReferencePrice == "50500" && item.ReferenceStatus == "fresh"
 		}
 		if item.Pair == "AAVEUSDT" {
 			foundEmptyCatalogPair = item.LastPrice == "0" && item.ChangeBPS24H == "0"
@@ -107,6 +125,21 @@ func TestMarketDataReadModelIsSequencedIdempotentAndIntegerOnly(t *testing.T) {
 	}
 	if !foundFixture || !foundEmptyCatalogPair {
 		t.Fatalf("all tickers omitted active or zero-volume market: %+v", tickers)
+	}
+	for _, tc := range []struct{ name, sql, status string }{
+		{"stopped", `UPDATE market_maker_control SET kill_switch=TRUE WHERE singleton`, "stopped"},
+		{"disabled", `UPDATE market_maker_control SET kill_switch=FALSE,enabled=FALSE WHERE singleton`, "disabled"},
+		{"expired", `UPDATE market_maker_control SET enabled=TRUE WHERE singleton`, "stale"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := pool.Exec(ctx, tc.sql); err != nil {
+				t.Fatal(err)
+			}
+			got, err := store.Ticker(ctx, pair, start.Add(time.Hour+time.Minute))
+			if err != nil || got.ReferenceStatus != tc.status || got.ReferencePrice != "0" || got.ReferenceObservedAt != nil || got.LastPrice != "49000" {
+				t.Fatalf("reference gate: %+v %v", got, err)
+			}
+		})
 	}
 	trades, err := store.RecentTrades(ctx, pair, 10)
 	if err != nil || len(trades) != 3 || trades[0].SequenceID != 3 || trades[2].SequenceID != 1 {

@@ -27,15 +27,18 @@ type Trade struct {
 }
 
 type Ticker struct {
-	Pair           string `json:"pair"`
-	SequenceID     uint64 `json:"sequence_id"`
-	LastPrice      string `json:"last_price"`
-	High24H        string `json:"high_24h"`
-	Low24H         string `json:"low_24h"`
-	Volume24H      string `json:"volume_24h"`
-	QuoteVolume24H string `json:"quote_volume_24h"`
-	Change24H      string `json:"change_24h"`
-	ChangeBPS24H   string `json:"change_bps_24h"`
+	Pair                string     `json:"pair"`
+	SequenceID          uint64     `json:"sequence_id"`
+	LastPrice           string     `json:"last_price"`
+	High24H             string     `json:"high_24h"`
+	Low24H              string     `json:"low_24h"`
+	Volume24H           string     `json:"volume_24h"`
+	QuoteVolume24H      string     `json:"quote_volume_24h"`
+	Change24H           string     `json:"change_24h"`
+	ChangeBPS24H        string     `json:"change_bps_24h"`
+	ReferencePrice      string     `json:"reference_price"`
+	ReferenceObservedAt *time.Time `json:"reference_observed_at,omitempty"`
+	ReferenceStatus     string     `json:"reference_status"`
 }
 
 func tickerChanges(lastPrice, openingPrice string) (string, string) {

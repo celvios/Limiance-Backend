@@ -101,7 +101,11 @@ func (store *PostgresStore) Ticker(ctx context.Context, pair string, now time.Ti
 	}
 	ticker.SequenceID = sequenceValue.Uint64()
 	ticker.Change24H, ticker.ChangeBPS24H = tickerChanges(ticker.LastPrice, first)
-	return ticker, nil
+	items := []Ticker{ticker}
+	if err := store.attachReferences(ctx, items, now); err != nil {
+		return Ticker{}, err
+	}
+	return items[0], nil
 }
 
 func (store *PostgresStore) Tickers(ctx context.Context, now time.Time) ([]Ticker, error) {
@@ -143,7 +147,60 @@ func (store *PostgresStore) Tickers(ctx context.Context, now time.Time) ([]Ticke
 		ticker.Change24H, ticker.ChangeBPS24H = tickerChanges(ticker.LastPrice, openingPrice)
 		tickers = append(tickers, ticker)
 	}
-	return tickers, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	if err := store.attachReferences(ctx, tickers, now); err != nil {
+		return nil, err
+	}
+	return tickers, nil
+}
+
+// attachReferences never substitutes indicative prices for executed trade data.
+// Check control state at read time, including stops that leave old decisions intact.
+func (store *PostgresStore) attachReferences(ctx context.Context, tickers []Ticker, now time.Time) error {
+	indexes := make(map[string]int, len(tickers))
+	pairs := make([]string, 0, len(tickers))
+	for i := range tickers {
+		tickers[i].ReferencePrice, tickers[i].ReferenceStatus = "0", "unavailable"
+		indexes[tickers[i].Pair] = i
+		pairs = append(pairs, tickers[i].Pair)
+	}
+	if len(pairs) == 0 {
+		return nil
+	}
+	rows, err := store.pool.Query(ctx, `SELECT r.pair,r.last_reference_price_atomic::text,r.updated_at,
+		CASE
+		WHEN NOT c.enabled OR NOT p.enabled THEN 'disabled'
+		WHEN c.kill_switch THEN 'stopped'
+		WHEN r.updated_at < GREATEST(c.updated_at,p.updated_at) THEN 'unavailable'
+		WHEN r.updated_at > $2 OR r.updated_at < $2 - make_interval(secs => p.stale_after_seconds) THEN 'stale'
+		WHEN r.last_decision NOT IN ('dry_run','quoting','duplicate_cycle') OR r.last_reference_price_atomic IS NULL THEN 'unavailable'
+		ELSE 'fresh' END
+		FROM market_maker_risk_state r JOIN market_maker_configs p ON p.pair=r.pair
+		CROSS JOIN market_maker_control c WHERE c.singleton AND r.pair=ANY($1::text[])`, pairs, now.UTC())
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var pair, status string
+		var price *string
+		var observed time.Time
+		if err := rows.Scan(&pair, &price, &observed, &status); err != nil {
+			return err
+		}
+		i := indexes[pair]
+		tickers[i].ReferenceStatus = status
+		if status == "fresh" && price != nil && positiveAtomic(*price) {
+			tickers[i].ReferencePrice = *price
+			tickers[i].ReferenceObservedAt = &observed
+		} else if status == "fresh" {
+			tickers[i].ReferenceStatus = "unavailable"
+		}
+	}
+	return rows.Err()
 }
 
 func (store *PostgresStore) MinuteCandles(ctx context.Context, pair string, before time.Time, limit int) ([]Candle, error) {
