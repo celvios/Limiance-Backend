@@ -1,6 +1,6 @@
 # Staging test-money implementation plan
 
-Date: 2026-09-05. Inspection complete; implementation and activation pending.
+Date: 2026-09-05. Issuance core implemented and tested; integration and activation pending.
 
 ## Approved policy
 
@@ -79,6 +79,10 @@ silently moving an entitlement to another token or network.
 
 ## Ordered implementation checklist
 
+Completed task: isolated default-off customer issuance service, policy and
+database tests. No HTTP wiring or activation until entitlement/isolation gates
+pass. Outstanding audit, frontend, custody, lifecycle and release tasks remain open.
+
 - [x] Inspect authoritative code/contracts and preserve worktree.
 - [x] Verify AWS access, six service rollouts and historical audit report.
 - [x] Record approved grant/withdrawal policy and this engineering plan.
@@ -87,6 +91,11 @@ silently moving an entitlement to another token or network.
 - [ ] Build default-off staging issuance: non-spendable counterpart accounts,
   balanced journals, versioned limits, recipient/reason, proposal/approval roles,
   payload-bound idempotency, sorted locks, atomic quota use and audit/outbox.
+- [x] Implement isolated customer grant policy/service and immutable history,
+  with real PostgreSQL transaction, concurrency, rollback and idempotency tests.
+- [ ] Complete issuance integration: trusted independent-reference adapter,
+  reviewed policy/recipient administration, read/proposal/approval API contracts,
+  treasury-specific allocation limits and runtime wiring after safety gates.
 - [ ] Enforce test/mainnet isolation before enabling issuance: deployment/DB
   identity, custody workspace/source, chain verification and signing allowlist.
   Reject mismatched startup/configuration and prohibit production import.
@@ -152,8 +161,50 @@ fees/replay to 6; auth/idempotency/rate limits to 7; load to 8; recording and
 sign-off to 9. Issuance/entitlement tests supplement these. Validate stale sample
 endpoints/arithmetic against code/OpenAPI. Skips do not count as passes.
 
-This planning task changes no runtime code or SQL; no functional tests rerun
-and no new functional acceptance item marked passed. Each implementation task
-reports full paths, SQL, core logic, proving tests, mapping and limitations,
-then receives a domain-named commit. Commit this engineering plan only;
-preserve existing handoff edits and package-lock.json. No push/deployment.
+Each implementation task reports full paths, SQL, core logic, proving tests,
+mapping and limitations, then receives a domain-named commit. Preserve existing
+handoff edits and package-lock.json. No push/deployment for the isolated core.
+
+## Issuance core evidence (2026-09-05)
+
+Created files under C:/Users/toluk/Desktop/Limiance Backend:
+
+- internal/testmoney/doc.go
+- internal/testmoney/policy.go
+- internal/testmoney/service.go
+- internal/testmoney/postgres.go
+- internal/testmoney/policy_test.go
+- internal/testmoney/postgres_test.go
+- migrations/000068_staging_test_money.up.sql
+- migrations/000068_staging_test_money.down.sql
+
+Modified this plan only among existing tracked files.
+Migration adds policies, a disabled control row, named recipients, immutable
+requests and immutable approved grants. Request and grant history cannot be
+updated/deleted; rollback refuses to erase recorded requests. No policy/recipient
+is enabled by migration. No deployment route imports the service.
+
+Core: proposal hashes bind actor/key to payload. Approval rechecks both active
+roles, different actors, named recipient/account/asset eligibility and the exact
+policy version. The administrative control-row lock serializes quota consumption.
+Grant valuation uses two distinct fresh sources and big.Int ceiling arithmetic.
+Lifetime issued USDT totals span all assets, accounts and policy versions.
+Sorted shared ledger locks protect posting. One transaction inserts the balanced
+journal, frozen unowned counterpart, grant/evidence, audit and outbox; it creates
+no deposit or withdrawal entitlement.
+
+Validation: go test ./... -count=1 passed with LIMIANCE_TEST_DATABASE_URL pointed
+at disposable local PostgreSQL, after applying all repository migrations there.
+All 12 new top-level issuance tests passed (4 unit, 8 database). Database cases
+cover disabled/environment mismatch, exact posting and retry, revoked roles,
+same checker, disabled eligibility, policy change, concurrent quota contention,
+outbox-failure rollback, conflicting approval keys, cross-token/version quotas
+and global quotas across recipients. The eight database tests create isolated
+schemas from actual migrations. External integrations without their configured
+dependencies may still skip in the broad suite; no staging or Section 9 claim.
+
+Remaining: runtime/database/custody isolation proof, deposited-token entitlement,
+custody-capacity enforcement, audited treasury funding, reference adapter, HTTP
+integration, current staging audit, frontend and real deployed execution gates.
+The named-user 10,000-USDT ceiling is implemented without automatic replenishment.
+No global cap, asset list, reference tolerances or treasury limits are activated.
