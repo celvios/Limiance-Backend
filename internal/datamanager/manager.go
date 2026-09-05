@@ -2415,6 +2415,7 @@ type WithdrawalCancellationResult struct {
 }
 
 var ErrWithdrawalNotCancellable = errors.New("withdrawal is not cancellable")
+var ErrWithdrawalIdempotencyConflict = errors.New("withdrawal idempotency payload conflict")
 
 // RequestWithdrawal holds funds by moving them from available to held inside
 // an immutable journal. It is intentionally not a custody broadcast command.
@@ -2439,8 +2440,20 @@ func (m *Manager) RequestWithdrawal(ctx context.Context, input WithdrawalInput) 
 		return WithdrawalResult{}, err
 	}
 	var result WithdrawalResult
-	err = tx.QueryRow(ctx, `SELECT id::text, (SELECT id::text FROM journals WHERE withdrawal_id = withdrawals.id), status FROM withdrawals WHERE idempotency_key=$1`, input.IdempotencyKey).Scan(&result.WithdrawalID, &result.JournalID, &result.Status)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "withdrawal-idempotency:"+input.IdempotencyKey); err != nil {
+		return WithdrawalResult{}, err
+	}
+	var sameRequest bool
+	err = tx.QueryRow(ctx, `SELECT w.id::text,
+ (SELECT j.id::text FROM journals j WHERE j.withdrawal_id=w.id AND j.reference_type='withdrawal_hold'),
+ w.status,w.user_id=$2::uuid AND w.account_id=$3::uuid AND a.symbol=$4 AND a.network=$5
+ AND w.destination_address=$6 AND w.destination_tag=$7 AND w.amount_atomic=$8::numeric
+ FROM withdrawals w JOIN assets a ON a.id=w.asset_id WHERE w.idempotency_key=$1`,
+		input.IdempotencyKey, input.UserID, input.SourceAccountID, input.AssetSymbol, input.Network, input.Address, input.Tag, input.AmountAtomic).Scan(&result.WithdrawalID, &result.JournalID, &result.Status, &sameRequest)
 	if err == nil {
+		if !sameRequest {
+			return WithdrawalResult{}, ErrWithdrawalIdempotencyConflict
+		}
 		result.Duplicate = true
 		return result, tx.Commit(ctx)
 	}
@@ -2462,6 +2475,10 @@ func (m *Manager) RequestWithdrawal(ctx context.Context, input WithdrawalInput) 
 		return WithdrawalResult{}, err
 	}
 	_ = tx.QueryRow(ctx, `SELECT id::text FROM withdrawal_addresses WHERE user_id=$1 AND asset_id=$2 AND address=$3 AND tag=$4 AND status='active' AND activated_at <= now()`, input.UserID, assetID, input.Address, input.Tag).Scan(&addressID)
+	entitlement, err := checkWithdrawalEntitlement(ctx, tx, input.UserID, assetID, input.AmountAtomic)
+	if err != nil {
+		return WithdrawalResult{}, err
+	}
 	var kycOK bool
 	if err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM kyc_profiles WHERE user_id=$1 AND status='approved')`, input.UserID).Scan(&kycOK); err != nil || !kycOK {
 		if err != nil {
@@ -2500,6 +2517,9 @@ func (m *Manager) RequestWithdrawal(ctx context.Context, input WithdrawalInput) 
 		return WithdrawalResult{}, err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO postings (journal_id,account_id,asset_id,bucket,direction,amount_atomic) VALUES ($1,$2,$3,'available','debit',$4),($1,$2,$3,'held','credit',$4)`, result.JournalID, input.SourceAccountID, assetID, input.AmountAtomic); err != nil {
+		return WithdrawalResult{}, err
+	}
+	if err = recordWithdrawalEntitlement(ctx, tx, entitlement, result.WithdrawalID, input.UserID, assetID, input.AmountAtomic); err != nil {
 		return WithdrawalResult{}, err
 	}
 	payload, err := json.Marshal(map[string]any{"withdrawal_id": result.WithdrawalID, "asset_symbol": input.AssetSymbol, "network": input.Network, "amount_atomic": input.AmountAtomic})
@@ -2624,12 +2644,12 @@ func (m *Manager) RecordWithdrawalCustodyUpdate(ctx context.Context, input Withd
 		if err = tx.QueryRow(ctx, `INSERT INTO accounts(user_id,kind,name) VALUES(NULL,'system',$1) ON CONFLICT (name) WHERE kind='system' DO UPDATE SET name=EXCLUDED.name RETURNING id::text`, systemName).Scan(&systemAccountID); err != nil {
 			return false, err
 		}
-		if err = tx.QueryRow(ctx, `INSERT INTO journals(idempotency_key,reference_type,reference_id,withdrawal_id) VALUES($1,'withdrawal_settlement',$2,$2::uuid) RETURNING id::text`, "withdrawal-settlement-"+withdrawalID, withdrawalID).Scan(&journalID); err != nil {
+		if err = tx.QueryRow(ctx, `INSERT INTO journals(idempotency_key,reference_type,reference_id,withdrawal_id) VALUES($1,'withdrawal_settlement',$2::text,$2::uuid) RETURNING id::text`, "withdrawal-settlement-"+withdrawalID, withdrawalID).Scan(&journalID); err != nil {
 			return false, err
 		}
 		_, err = tx.Exec(ctx, `INSERT INTO postings(journal_id,account_id,asset_id,bucket,direction,amount_atomic) VALUES($1,$2,$3,'held','debit',$4),($1,$5,$3,'available','credit',$4)`, journalID, accountID, assetID, amount, systemAccountID)
 	} else {
-		if err = tx.QueryRow(ctx, `INSERT INTO journals(idempotency_key,reference_type,reference_id,withdrawal_id) VALUES($1,'withdrawal_release',$2,$2::uuid) RETURNING id::text`, "withdrawal-release-"+withdrawalID, withdrawalID).Scan(&journalID); err != nil {
+		if err = tx.QueryRow(ctx, `INSERT INTO journals(idempotency_key,reference_type,reference_id,withdrawal_id) VALUES($1,'withdrawal_release',$2::text,$2::uuid) RETURNING id::text`, "withdrawal-release-"+withdrawalID, withdrawalID).Scan(&journalID); err != nil {
 			return false, err
 		}
 		_, err = tx.Exec(ctx, `INSERT INTO postings(journal_id,account_id,asset_id,bucket,direction,amount_atomic) VALUES($1,$2,$3,'held','debit',$4),($1,$2,$3,'available','credit',$4)`, journalID, accountID, assetID, amount)
@@ -2687,7 +2707,7 @@ func (m *Manager) CancelWithdrawal(ctx context.Context, userID, withdrawalID str
 	}
 	var result WithdrawalCancellationResult
 	result.WithdrawalID, result.Status = withdrawalID, "cancelled"
-	err = tx.QueryRow(ctx, `INSERT INTO journals (idempotency_key,reference_type,reference_id,withdrawal_id) VALUES ($1,'withdrawal_cancel',$2,$2::uuid) RETURNING id::text`, "withdrawal-cancel-"+withdrawalID, withdrawalID).Scan(&result.JournalID)
+	err = tx.QueryRow(ctx, `INSERT INTO journals (idempotency_key,reference_type,reference_id,withdrawal_id) VALUES ($1,'withdrawal_cancel',$2::text,$2::uuid) RETURNING id::text`, "withdrawal-cancel-"+withdrawalID, withdrawalID).Scan(&result.JournalID)
 	if err != nil {
 		return WithdrawalCancellationResult{}, err
 	}

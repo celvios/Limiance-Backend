@@ -15,7 +15,7 @@ func loadPolicy(ctx context.Context, tx pgx.Tx) (string, Policy, error) {
 	var enabled bool
 	var environment, id string
 	var raw []byte
-	err := tx.QueryRow(ctx, `SELECT c.enabled,c.environment,COALESCE(c.policy_id::text,''),COALESCE(p.policy,'{}'::jsonb)
+	err := tx.QueryRow(ctx, `SELECT c.enabled AND c.withdrawal_limits_ready,c.environment,COALESCE(c.policy_id::text,''),COALESCE(p.policy,'{}'::jsonb)
  FROM test_money_control c LEFT JOIN test_money_policies p ON p.id=c.policy_id
  WHERE c.singleton=TRUE FOR UPDATE OF c`).Scan(&enabled, &environment, &id, &raw)
 	if err != nil {

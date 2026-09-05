@@ -1,6 +1,6 @@
 # Staging test-money implementation plan
 
-Date: 2026-09-05. Issuance core implemented and tested; integration and activation pending.
+Date: 2026-09-05. Issuance core and withdrawal admission tested; integration and activation pending.
 
 ## Approved policy
 
@@ -79,6 +79,14 @@ silently moving an entitlement to another token or network.
 
 ## Ordered implementation checklist
 
+Completed task: withdrawal admission enforcement in the shared transaction layer.
+Files: new internal/datamanager/withdrawal_entitlement.go and database tests;
+new migration 000069_withdrawal_entitlement; scoped RequestWithdrawal and HTTP
+error mapping changes; issuance readiness check. No enabling or grants yet.
+Reuse credited deposit journals and existing withdrawal lifecycle as sources;
+record immutable admission evidence. Worker revalidation/capacity and rollout
+verification remain mandatory before readiness is enabled.
+
 Completed task: isolated default-off customer issuance service, policy and
 database tests. No HTTP wiring or activation until entitlement/isolation gates
 pass. Outstanding audit, frontend, custody, lifecycle and release tasks remain open.
@@ -101,6 +109,10 @@ pass. Outstanding audit, frontend, custody, lifecycle and release tasks remain o
   Reject mismatched startup/configuration and prohibit production import.
 - [ ] Establish deposit entitlement and withdrawal enforcement before issued
   funds can reach an existing withdrawal path, including bought-back-token tests.
+- [x] Enforce the net-deposit ceiling at withdrawal admission with immutable
+  evidence, user/asset serialization, lifecycle recovery and bought-back tests.
+- [ ] Finish pre-broadcast revalidation, durable dispatch claims, custody/fee
+  reservation and explicit failed/unknown-outcome recovery before readiness.
 - [ ] Issue bounded approved treasury inventory, then allocate through audited
   maker activation with shared sorted locks. No synthesized deposit events.
 - [ ] Implement any explicit custody/internal_spot bridge: journals balanced
@@ -208,3 +220,74 @@ custody-capacity enforcement, audited treasury funding, reference adapter, HTTP
 integration, current staging audit, frontend and real deployed execution gates.
 The named-user 10,000-USDT ceiling is implemented without automatic replenishment.
 No global cap, asset list, reference tolerances or treasury limits are activated.
+
+## Withdrawal admission evidence (2026-09-05)
+
+AWS identity rechecked successfully: 041659147758. No login refresh was required.
+No remote balances, controls, grants or deployments changed by this task.
+Requested grants remain pending: 10,000 USDT equivalent of mixed tokens each for
+toluking001@gmail.com and favourtolu57@gmail.com, with distinct approval.
+
+Created under C:/Users/toluk/Desktop/Limiance Backend:
+
+- internal/datamanager/withdrawal_entitlement.go
+- internal/testmoney/withdrawal_entitlement_test.go
+- migrations/000069_withdrawal_entitlement.up.sql
+- migrations/000069_withdrawal_entitlement.down.sql
+
+Modified under the same root:
+
+- internal/datamanager/manager.go
+- internal/platform/httpserver/withdrawals.go
+- internal/testmoney/postgres.go
+- internal/testmoney/postgres_test.go
+- openapi/openapi.yaml
+- STAGING_TEST_MONEY_PLAN.md
+
+Admission reads credited, risk-approved, confirmed same-user/same-asset deposits
+with a transaction hash and matching balanced posted deposit-credit journal.
+It counts deposit identity once, regardless of duplicate journal references.
+Existing completed/pending withdrawals consume the limit. Failed/cancelled/
+rejected withdrawals need a compensating release journal to restore allowance;
+absence of a provider ID alone is not proof of non-submission.
+User/asset advisory locks serialize withdrawals across Funding and UTA accounts.
+Admission evidence, hold, request, audit and outbox commit or roll back together.
+Extra balances from issuance/trades do not increase the ceiling. Bought-back
+same-token balances remain eligible within net deposits.
+
+This increment uses existing deposit and withdrawal lifecycle records plus
+immutable journal evidence; it does not introduce or claim a complete standalone
+entitlement event stream/backfill. Current-source audit, reorg handling at dispatch
+and reconciliation remain required before activation.
+
+Protection applies while readiness/issuance is enabled or after any recorded
+grant. A shared control lock and subsequent fresh history read prevent first-
+issuance/disable races. Issuance itself now requires withdrawal_limits_ready;
+the new column defaults false and is not changed on staging.
+
+Lifecycle tests exposed two existing defects in the migrated schema/code:
+untyped text/UUID parameters in cancellation/settlement/release journal inserts,
+and a unique withdrawal_id constraint allowing only one journal per withdrawal.
+Fixed casts and replaced uniqueness with (withdrawal_id,reference_type), retaining
+append-only hold plus settlement/release. Down migration refuses destructive
+rollback when admission/issuance or multi-journal withdrawal history exists.
+Retry lookup now returns the original hold journal after terminal transitions;
+idempotency is serialized and bound to user/account/asset/network/amount/address.
+Changed-payload retries return a conflict rather than another request's result.
+
+Validation: full go test ./... -count=1 passed with local PostgreSQL integration.
+After final missing-ACK protection and indexes, reran all affected packages:
+internal/testmoney, internal/withdrawals, internal/platform/httpserver, openapi;
+all passed. Testmoney now has 21 top-level tests, including 9 new database tests
+for withdrawal/readiness behavior. New cases cover issued-only balances, disabling
+issuance, missing credit journals, reorged deposits, network mismatch, concurrent
+accounts, cancellation, completion/failure/replay, missing ACK, bought-back funds,
+changed-payload retries and outbox rollback. Execution balance fixtures are not
+claimed to be actual matcher tests. Unconfigured external integrations may skip.
+
+Test mapping: new deposit-entitlement/lifecycle acceptance items; supplements
+Section 7 money-operation retry safety and Section 9 ledger evidence. Does not
+satisfy actual custody withdrawal, live-order, browser or full Section 9 gates.
+Next: durable pre-broadcast claims/revalidation and custody capacity/fees, then
+issuance adapter/API integration and reviewed staging activation. Preserve all
+other trading, frontend, audit, funding and release tasks above.

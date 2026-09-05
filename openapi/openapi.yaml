@@ -153,6 +153,16 @@ paths:
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '202': { description: Withdrawal submitted for risk evaluation }
+        '409':
+          description: Withdrawal rejected by balance, route, or deposit-entitlement policy. When test-money protection is active, withdrawals cannot exceed remaining confirmed deposits of the same token on the same network.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error]
+                properties:
+                  error: { type: string, example: withdrawal_deposit_limit }
+                  message: { type: string }
   /notifications:
     post:
       summary: Create an in-app notification for the authenticated user

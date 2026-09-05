@@ -179,7 +179,7 @@ func databaseFixture(t *testing.T) *fixture {
 }
 func (f *fixture) enable(t *testing.T) {
 	t.Helper()
-	if _, err := f.pool.Exec(f.ctx, `UPDATE test_money_control SET enabled=TRUE,environment='staging',policy_id=$1`, f.policyID); err != nil {
+	if _, err := f.pool.Exec(f.ctx, `UPDATE test_money_control SET enabled=TRUE,withdrawal_limits_ready=TRUE,environment='staging',policy_id=$1`, f.policyID); err != nil {
 		t.Fatal(err)
 	}
 }

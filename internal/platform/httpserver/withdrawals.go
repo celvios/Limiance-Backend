@@ -183,6 +183,10 @@ func (h *WithdrawalHandler) Request(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "withdrawal_kyc_required", "message": "Complete identity verification before withdrawing."})
 		} else if errors.Is(err, datamanager.ErrWithdrawalAccountUnavailable) {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "withdrawal_account_unavailable", "message": "The selected funding account is unavailable."})
+		} else if errors.Is(err, datamanager.ErrWithdrawalIdempotencyConflict) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "idempotency_conflict", "message": "This idempotency key was already used for a different withdrawal."})
+		} else if errors.Is(err, datamanager.ErrWithdrawalDepositLimit) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "withdrawal_deposit_limit", "message": "Withdrawals are limited to your remaining confirmed deposits of this token on this network."})
 		} else if errors.Is(err, datamanager.ErrInsufficientWithdrawalBalance) {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "insufficient_withdrawal_balance", "message": "Your available balance is too low for this withdrawal."})
 		} else if errors.Is(err, datamanager.ErrWithdrawalNotAllowed) {
