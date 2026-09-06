@@ -62,6 +62,16 @@ type SupportedAsset struct {
 }
 
 var _ Provider = (*FireblocksClient)(nil)
+var _ WithdrawalObserver = (*FireblocksClient)(nil)
+
+type fireblocksHTTPError struct {
+	status int
+	body   string
+}
+
+func (e *fireblocksHTTPError) Error() string {
+	return fmt.Sprintf("fireblocks API returned %d: %s", e.status, e.body)
+}
 
 func (*FireblocksClient) ProviderID() string { return "fireblocks" }
 
@@ -164,12 +174,86 @@ func (c *FireblocksClient) CreateWithdrawal(ctx context.Context, input Withdrawa
 	return Withdrawal{ProviderTransactionID: response.ID, Status: response.Status}, nil
 }
 
+func (c *FireblocksClient) GetVaultAssetBalance(ctx context.Context, vaultID, assetID string) (VaultAssetBalance, error) {
+	if strings.TrimSpace(vaultID) == "" || strings.TrimSpace(assetID) == "" {
+		return VaultAssetBalance{}, errors.New("fireblocks vault and asset IDs are required")
+	}
+	path := "/v1/vault/accounts/" + url.PathEscape(vaultID) + "/" + url.PathEscape(assetID)
+	var response struct {
+		ID           string `json:"id"`
+		Available    string `json:"available"`
+		LockedAmount string `json:"lockedAmount"`
+		BlockHeight  string `json:"blockHeight"`
+		BlockHash    string `json:"blockHash"`
+	}
+	if err := c.do(ctx, http.MethodGet, path, nil, "", &response); err != nil {
+		return VaultAssetBalance{}, err
+	}
+	if response.ID == "" || response.Available == "" {
+		return VaultAssetBalance{}, errors.New("fireblocks balance response is incomplete")
+	}
+	return VaultAssetBalance{AssetID: response.ID, Available: response.Available,
+		Locked: response.LockedAmount, BlockHeight: response.BlockHeight, BlockHash: response.BlockHash}, nil
+}
+
+func (c *FireblocksClient) EstimateWithdrawalFee(ctx context.Context, input WithdrawalRequest) (FeeEstimate, error) {
+	if input.SourceVaultID == "" || input.AssetID == "" || input.Destination == "" || input.Amount == "" {
+		return FeeEstimate{}, errors.New("fireblocks fee estimate fields are required")
+	}
+	body, err := json.Marshal(map[string]any{
+		"assetId": input.AssetID, "amount": input.Amount,
+		"source": map[string]string{"type": "VAULT_ACCOUNT", "id": input.SourceVaultID},
+		"destination": map[string]any{"type": "ONE_TIME_ADDRESS",
+			"oneTimeAddress": map[string]string{"address": input.Destination, "tag": input.DestinationTag}},
+	})
+	if err != nil {
+		return FeeEstimate{}, err
+	}
+	var response struct {
+		Medium struct {
+			NetworkFee string `json:"networkFee"`
+		} `json:"medium"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/v1/transactions/estimate_fee", body, "", &response); err != nil {
+		return FeeEstimate{}, err
+	}
+	if response.Medium.NetworkFee == "" {
+		return FeeEstimate{}, errors.New("fireblocks medium fee estimate did not contain networkFee")
+	}
+	return FeeEstimate{NetworkFee: response.Medium.NetworkFee}, nil
+}
+
+func (c *FireblocksClient) FindWithdrawalByExternalID(ctx context.Context, externalID string) (WithdrawalLookup, error) {
+	if strings.TrimSpace(externalID) == "" {
+		return WithdrawalLookup{}, errors.New("fireblocks external transaction ID is required")
+	}
+	var response struct {
+		ID           string `json:"id"`
+		ExternalTxID string `json:"externalTxId"`
+		Status       string `json:"status"`
+		TxHash       string `json:"txHash"`
+	}
+	path := "/v1/transactions/external_tx_id/" + url.PathEscape(externalID)
+	if err := c.do(ctx, http.MethodGet, path, nil, "", &response); err != nil {
+		var apiErr *fireblocksHTTPError
+		if errors.As(err, &apiErr) && apiErr.status == http.StatusNotFound {
+			return WithdrawalLookup{ExternalID: externalID}, nil
+		}
+		return WithdrawalLookup{}, err
+	}
+	if response.ID == "" || response.ExternalTxID != externalID {
+		return WithdrawalLookup{}, errors.New("fireblocks transaction lookup response identity mismatch")
+	}
+	return WithdrawalLookup{Found: true, ProviderTransactionID: response.ID,
+		ExternalID: response.ExternalTxID, Status: response.Status, TransactionHash: response.TxHash}, nil
+}
+
 func AtomicToProviderAmount(amount string, decimals int16) (string, error) {
-	if decimals < 0 || amount == "" {
+	if decimals < 0 || decimals > 36 || amount == "" {
 		return "", errors.New("invalid atomic amount")
 	}
 	value, ok := new(big.Int).SetString(amount, 10)
-	if !ok || value.Sign() <= 0 {
+	if !ok || value.Sign() <= 0 || len(value.String()) > 78 {
 		return "", errors.New("invalid atomic amount")
 	}
 	base := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
@@ -179,6 +263,43 @@ func AtomicToProviderAmount(amount string, decimals int16) (string, error) {
 		return whole.String(), nil
 	}
 	return whole.String() + "." + strings.TrimRight(fmt.Sprintf("%0*s", int(decimals), fraction.String()), "0"), nil
+}
+
+// ProviderAmountToAtomic parses a non-negative provider decimal exactly. It
+// rejects exponent notation, signs, excess precision and NUMERIC(78,0) overflow.
+func ProviderAmountToAtomic(amount string, decimals int16) (string, error) {
+	if decimals < 0 || decimals > 36 || amount == "" || strings.TrimSpace(amount) != amount {
+		return "", errors.New("invalid provider amount")
+	}
+	parts := strings.Split(amount, ".")
+	if len(parts) > 2 || parts[0] == "" || !decimalDigits(parts[0]) {
+		return "", errors.New("invalid provider amount")
+	}
+	fraction := ""
+	if len(parts) == 2 {
+		fraction = parts[1]
+		if fraction == "" || !decimalDigits(fraction) || len(fraction) > int(decimals) {
+			return "", errors.New("provider amount exceeds asset precision")
+		}
+	}
+	digits := strings.TrimLeft(parts[0]+fraction+strings.Repeat("0", int(decimals)-len(fraction)), "0")
+	if digits == "" {
+		return "0", nil
+	}
+	value, ok := new(big.Int).SetString(digits, 10)
+	if !ok || len(value.String()) > 78 {
+		return "", errors.New("provider amount exceeds atomic range")
+	}
+	return value.String(), nil
+}
+
+func decimalDigits(value string) bool {
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // ListSupportedAssets reads the provider's workspace-specific asset registry.
@@ -215,7 +336,7 @@ func (c *FireblocksClient) do(ctx context.Context, method, path string, body []b
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		limited, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return fmt.Errorf("fireblocks API returned %d: %s", response.StatusCode, strings.TrimSpace(string(limited)))
+		return &fireblocksHTTPError{status: response.StatusCode, body: strings.TrimSpace(string(limited))}
 	}
 	return json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(output)
 }

@@ -79,6 +79,13 @@ silently moving an entitlement to another token or network.
 
 ## Ordered implementation checklist
 
+Current task: custody observation primitives. Add exact provider-balance and
+medium-fee reads plus external-ID transaction lookup to the Fireblocks adapter.
+All monetary responses remain strings and are converted to bounded atomic units
+without float64. Missing/invalid fee or balance data fails closed. A not-found
+lookup is evidence for reconciliation only and never releases or rearms a dispatch.
+Files: internal/custody/provider.go, fireblocks.go, fireblocks_test.go and this plan.
+
 Current increment: durable withdrawal submission boundary. Add immutable one-shot
 dispatch evidence, revalidate controls/eligibility/net deposits and held funds,
 and commit audit/outbox before a worker may call custody. Competing workers and
@@ -377,3 +384,39 @@ criteria; supplements Section 7 idempotency and Section 9 ledger/audit evidence.
 No actual custody transaction, browser, live matcher or Section 9 sign-off claimed.
 Readiness, issuance, treasury allocations and live quoting remain unactivated.
 Both requested 10,000-USDT-equivalent mixed-token grants remain pending.
+
+## Custody observation primitives evidence (2026-09-06)
+
+Created:
+
+- C:/Users/toluk/Desktop/Limiance Backend/internal/custody/fireblocks_observer_test.go
+
+Modified:
+
+- C:/Users/toluk/Desktop/Limiance Backend/internal/custody/provider.go
+- C:/Users/toluk/Desktop/Limiance Backend/internal/custody/fireblocks.go
+- C:/Users/toluk/Desktop/Limiance Backend/STAGING_TEST_MONEY_PLAN.md
+
+No SQL/schema change. WithdrawalObserver is an optional read-only custody boundary
+for vault/asset available balance, medium network-fee estimate and lookup by stable
+external transaction ID. The Fireblocks implementation uses the documented
+GET /v1/vault/accounts/{vaultAccountId}/{assetId}, POST
+/v1/transactions/estimate_fee, and GET
+/v1/transactions/external_tx_id/{externalTxId} paths with the existing signed JWT.
+It neither exposes credentials nor changes provider or database state.
+
+ProviderAmountToAtomic accepts only canonical unsigned base-10 fixed-point input,
+scales it exactly with big.Int, and rejects signs, whitespace, exponent notation,
+excess precision, decimals outside 0..36 and values beyond NUMERIC(78,0). No
+float64 is used. Missing available balance, missing medium networkFee, malformed
+responses and external-ID mismatches fail closed. HTTP 404 from lookup produces a
+not-observed result only; it does not prove non-submission, release a hold or
+authorize retry.
+
+Tests validate signed method/path/body contracts, exact available-balance and
+medium-fee extraction, exact atomic conversion including 78 digits, lookup
+identity/status/hash, 404 semantics and incomplete-response rejection. This
+satisfies only the provider-observation portion of custody capacity and ambiguous
+outcome test items. It does not reserve capacity, select/verify the fee asset,
+bind observation freshness, reconcile a dispatch, or broadcast a real testnet
+withdrawal. Readiness, issuance, both tester grants and quoting remain off.
