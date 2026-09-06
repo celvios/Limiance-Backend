@@ -332,7 +332,7 @@ func NewServer(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http
 				logger.Error("fireblocks client initialization failed", "error", err)
 			}
 		}
-		custodyPolicy := custody.RoutePolicy{Mode: cfg.CustodyMode, SelfCustodyTestnetEnabled: cfg.SelfCustodyTestnetEnabled, TestnetOnly: cfg.Environment == "staging"}
+		custodyPolicy := custody.RoutePolicy{Environment: cfg.Environment, Mode: cfg.CustodyMode, SelfCustodyTestnetEnabled: cfg.SelfCustodyTestnetEnabled, TestnetOnly: cfg.Environment == "staging"}
 		depositHandler := NewDepositHandler(custody.NewService(data, custodyProvider, custodyPolicy), logger)
 		mux.Handle("POST /v1/deposits/addresses", requireSession(authService)(http.HandlerFunc(depositHandler.Address)))
 		mux.Handle("POST /v1/wallet/deposit-addresses", requireSession(authService)(http.HandlerFunc(depositHandler.Address)))

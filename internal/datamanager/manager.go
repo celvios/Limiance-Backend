@@ -2393,6 +2393,7 @@ type WithdrawalResult struct {
 type WithdrawalForCustody struct {
 	ID                 string
 	UserID             string
+	AssetID            string
 	SourceVaultID      string
 	CustodyAssetID     string
 	Network            string
@@ -2551,7 +2552,7 @@ func (m *Manager) ApprovedWithdrawals(ctx context.Context, provider string, limi
 	if limit < 1 || limit > 100 {
 		limit = 25
 	}
-	rows, err := m.pool.Query(ctx, `SELECT w.id::text,w.user_id::text,c.external_vault_id,a.custody_asset_id,a.network,w.destination_address,w.destination_tag,w.amount_atomic::text,a.decimals
+	rows, err := m.pool.Query(ctx, `SELECT w.id::text,w.user_id::text,a.id::text,c.external_vault_id,a.custody_asset_id,a.network,w.destination_address,w.destination_tag,w.amount_atomic::text,a.decimals
 		FROM withdrawals w
 		JOIN assets a ON a.id=w.asset_id
 		JOIN custody_wallets c ON c.user_id=w.user_id AND c.provider=$1 AND c.status='active'
@@ -2565,7 +2566,7 @@ func (m *Manager) ApprovedWithdrawals(ctx context.Context, provider string, limi
 	items := make([]WithdrawalForCustody, 0)
 	for rows.Next() {
 		var item WithdrawalForCustody
-		if err := rows.Scan(&item.ID, &item.UserID, &item.SourceVaultID, &item.CustodyAssetID, &item.Network, &item.DestinationAddress, &item.DestinationTag, &item.AmountAtomic, &item.AssetDecimals); err != nil {
+		if err := rows.Scan(&item.ID, &item.UserID, &item.AssetID, &item.SourceVaultID, &item.CustodyAssetID, &item.Network, &item.DestinationAddress, &item.DestinationTag, &item.AmountAtomic, &item.AssetDecimals); err != nil {
 			return nil, err
 		}
 		items = append(items, item)

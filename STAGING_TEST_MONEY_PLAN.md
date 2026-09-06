@@ -79,14 +79,31 @@ silently moving an entitlement to another token or network.
 
 ## Ordered implementation checklist
 
-Current task: custody observation primitives. Add exact provider-balance and
+Completed task: custody observation primitives. Add exact provider-balance and
 medium-fee reads plus external-ID transaction lookup to the Fireblocks adapter.
 All monetary responses remain strings and are converted to bounded atomic units
 without float64. Missing/invalid fee or balance data fails closed. A not-found
 lookup is evidence for reconciliation only and never releases or rearms a dispatch.
 Files: internal/custody/provider.go, fireblocks.go, fireblocks_test.go and this plan.
 
-Current increment: durable withdrawal submission boundary. Add immutable one-shot
+Completed task: approved custody capacity routes and atomic reservations. Added
+immutable route definitions with separate proposal/approval records, explicit
+withdrawal-token and native-fee-token mappings, bounded observation freshness,
+per-transaction fee caps and default-off activation. Before custody is called,
+lock both provider vault/asset capacity keys in sorted order, subtract every
+unresolved local reservation and atomically persist token/gas reservation with
+the dispatch, audit and outbox. No route is seeded or enabled by migration.
+Files: migration 000071 custody capacity up/down, datamanager capacity/dispatch,
+withdrawal worker and PostgreSQL/unit tests, plus this plan.
+
+Current task: provider reconciliation for submitted and unknown dispatches.
+Use the stable external withdrawal ID and fresh provider observations to record
+an immutable consumed or safely released capacity outcome. A timeout, missing
+ACK or single not-found response never releases capacity or rearms submission.
+Define retry windows and repeated-negative evidence, preserve one-shot dispatch,
+and test completed, failed, delayed, conflicting and unknown provider outcomes.
+
+Completed increment: durable withdrawal submission boundary. Added immutable one-shot
 dispatch evidence, revalidate controls/eligibility/net deposits and held funds,
 and commit audit/outbox before a worker may call custody. Competing workers and
 restarts must not resubmit an uncertain attempt. This increment does not implement
@@ -132,9 +149,11 @@ pass. Outstanding audit, frontend, custody, lifecycle and release tasks remain o
   reservation and explicit failed/unknown-outcome recovery before readiness.
 - [x] Build durable one-shot dispatch boundary with fresh database eligibility,
   deposit-ceiling and held-journal checks; prove concurrency and lost-ACK retention.
-- [ ] Complete provider reconciliation and capacity/fee reservation. Audit and
-  drain legacy in-flight dispatch before worker rollout; no overlapping old/new
-  submitters. A committed intent alone is not proof of broadcast or non-submission.
+- [x] Add maker-checker custody routes, fresh exact token/gas observations,
+  fee caps, sorted capacity locks and atomic immutable dispatch reservations.
+- [ ] Complete provider reconciliation. Audit and drain legacy in-flight dispatch
+  before worker rollout; no overlapping old/new submitters. A committed intent
+  alone is not proof of broadcast or non-submission.
 - [ ] Issue bounded approved treasury inventory, then allocate through audited
   maker activation with shared sorted locks. No synthesized deposit events.
 - [ ] Implement any explicit custody/internal_spot bridge: journals balanced

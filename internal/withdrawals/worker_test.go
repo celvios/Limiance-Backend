@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/limiance/backend/internal/custody"
 	"github.com/limiance/backend/internal/datamanager"
@@ -11,13 +12,20 @@ import (
 
 type withdrawalDataStub struct {
 	items    []datamanager.WithdrawalForCustody
+	route    datamanager.WithdrawalCapacityRoute
+	evidence *datamanager.WithdrawalCapacityEvidence
 	marked   int
 	claimed  bool
 	claimErr error
 	markErr  error
 }
 
-func (stub *withdrawalDataStub) BeginWithdrawalDispatch(context.Context, string, datamanager.WithdrawalForCustody) (bool, error) {
+func (stub *withdrawalDataStub) WithdrawalCapacityRoute(context.Context, string, string, datamanager.WithdrawalForCustody) (datamanager.WithdrawalCapacityRoute, error) {
+	return stub.route, nil
+}
+
+func (stub *withdrawalDataStub) BeginWithdrawalDispatch(_ context.Context, _ string, _ datamanager.WithdrawalForCustody, evidence *datamanager.WithdrawalCapacityEvidence) (bool, error) {
+	stub.evidence = evidence
 	if stub.claimErr != nil {
 		return false, stub.claimErr
 	}
@@ -45,6 +53,26 @@ type submitterStub struct {
 	err     error
 	empty   bool
 	request custody.WithdrawalRequest
+}
+
+type observerSubmitterStub struct {
+	submitterStub
+	balances map[string]custody.VaultAssetBalance
+	fee      custody.FeeEstimate
+	observed []string
+}
+
+func (stub *observerSubmitterStub) GetVaultAssetBalance(_ context.Context, _, assetID string) (custody.VaultAssetBalance, error) {
+	stub.observed = append(stub.observed, assetID)
+	return stub.balances[assetID], nil
+}
+
+func (stub *observerSubmitterStub) EstimateWithdrawalFee(context.Context, custody.WithdrawalRequest) (custody.FeeEstimate, error) {
+	return stub.fee, nil
+}
+
+func (stub *observerSubmitterStub) FindWithdrawalByExternalID(context.Context, string) (custody.WithdrawalLookup, error) {
+	return custody.WithdrawalLookup{}, nil
 }
 
 func (stub *submitterStub) CreateWithdrawal(_ context.Context, request custody.WithdrawalRequest) (custody.Withdrawal, error) {
@@ -122,5 +150,48 @@ func TestWorkerAllowsApprovedTestnetAndRejectsMainnet(t *testing.T) {
 	processed, err = worker.RunOnce(context.Background())
 	if !errors.Is(err, custody.ErrNetworkNotApproved) || processed != 0 || provider.calls != 1 || data.marked != 1 {
 		t.Fatalf("mainnet: processed=%d calls=%d marked=%d err=%v", processed, provider.calls, data.marked, err)
+	}
+}
+
+func TestWorkerObservesTokenAndGasBeforeClaim(t *testing.T) {
+	item := datamanager.WithdrawalForCustody{ID: "withdrawal-1", AssetID: "asset-1", Network: "ethereum_sepolia",
+		AmountAtomic: "250000", AssetDecimals: 6, SourceVaultID: "vault", CustodyAssetID: "USDC_TEST5",
+		DestinationAddress: "destination"}
+	data := &withdrawalDataStub{items: []datamanager.WithdrawalForCustody{item}, route: datamanager.WithdrawalCapacityRoute{
+		Required: true, RouteID: "route-1", AssetID: "asset-1", Environment: "staging", Provider: "fireblocks",
+		Network: "ethereum_sepolia", ProviderAssetID: "USDC_TEST5", AssetDecimals: 6,
+		FeeProviderAssetID: "ETH_TEST5", FeeAssetDecimals: 18, MaxFeeAtomic: "10000000000000000", MaxObservationAgeSeconds: 10,
+	}}
+	provider := &observerSubmitterStub{balances: map[string]custody.VaultAssetBalance{
+		"USDC_TEST5": {AssetID: "USDC_TEST5", Available: "12.345678", BlockHeight: "1", BlockHash: "token-block"},
+		"ETH_TEST5":  {AssetID: "ETH_TEST5", Available: "0.25", BlockHeight: "2", BlockHash: "gas-block"},
+	}, fee: custody.FeeEstimate{NetworkFee: "0.0015"}}
+	worker := NewWorker(data, provider, "fireblocks", custody.RoutePolicy{Environment: "staging"})
+	fixed := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	worker.now = func() time.Time { return fixed }
+	processed, err := worker.RunOnce(context.Background())
+	if err != nil || processed != 1 {
+		t.Fatalf("processed=%d err=%v", processed, err)
+	}
+	if len(provider.observed) != 2 || provider.observed[0] != "USDC_TEST5" || provider.observed[1] != "ETH_TEST5" {
+		t.Fatalf("observations=%v", provider.observed)
+	}
+	want := datamanager.WithdrawalCapacityEvidence{RouteID: "route-1", Environment: "staging", ObservedAt: fixed,
+		AssetAvailable: "12345678", FeeAvailable: "250000000000000000", FeeRequired: "1500000000000000",
+		AssetBlockHeight: "1", AssetBlockHash: "token-block", FeeBlockHeight: "2", FeeBlockHash: "gas-block"}
+	if data.evidence == nil || *data.evidence != want {
+		t.Fatalf("evidence=%+v", data.evidence)
+	}
+}
+
+func TestWorkerFailsClosedWithoutRequiredObserver(t *testing.T) {
+	data := &withdrawalDataStub{items: []datamanager.WithdrawalForCustody{{ID: "id", AssetID: "asset", AmountAtomic: "1", AssetDecimals: 0}},
+		route: datamanager.WithdrawalCapacityRoute{Required: true}}
+	provider := &submitterStub{}
+	if n, err := NewWorker(data, provider, "fireblocks").RunOnce(context.Background()); n != 0 || !errors.Is(err, datamanager.ErrWithdrawalCapacityObservation) {
+		t.Fatalf("processed=%d err=%v", n, err)
+	}
+	if data.claimed || provider.calls != 0 {
+		t.Fatal("dispatch progressed without custody observation support")
 	}
 }

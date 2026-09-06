@@ -30,7 +30,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	policy := custody.RoutePolicy{Mode: cfg.CustodyMode, SelfCustodyTestnetEnabled: cfg.SelfCustodyTestnetEnabled, TestnetOnly: cfg.Environment == "staging"}
+	policy := custody.RoutePolicy{Environment: cfg.Environment, Mode: cfg.CustodyMode, SelfCustodyTestnetEnabled: cfg.SelfCustodyTestnetEnabled, TestnetOnly: cfg.Environment == "staging"}
 	worker := withdrawals.NewWorker(datamanager.New(pool), provider, provider.ProviderID(), policy)
 	for {
 		if _, err := worker.RunOnce(ctx); err != nil {

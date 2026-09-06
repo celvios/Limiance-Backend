@@ -11,6 +11,7 @@ var ErrNetworkNotApproved = errors.New("custody network is not approved")
 // request is constructed. It deliberately fails closed: self-custody can only
 // be enabled for the explicitly enumerated test networks.
 type RoutePolicy struct {
+	Environment               string
 	Mode                      string
 	SelfCustodyTestnetEnabled bool
 	TestnetOnly               bool

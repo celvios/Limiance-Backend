@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math/big"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/limiance/backend/internal/ledger"
@@ -19,7 +21,7 @@ var ErrWithdrawalDispatchChanged = errors.New("withdrawal dispatch payload or el
 // indistinguishable from a lost provider ACK and requires reconciliation.
 // Lock order follows admission: controls, entitlement, withdrawal, account,
 // shared ledger lock. External network calls are not made in this transaction.
-func (m *Manager) BeginWithdrawalDispatch(ctx context.Context, provider string, expected WithdrawalForCustody) (bool, error) {
+func (m *Manager) BeginWithdrawalDispatch(ctx context.Context, provider string, expected WithdrawalForCustody, capacity *WithdrawalCapacityEvidence) (bool, error) {
 	if provider == "" || expected.ID == "" {
 		return false, ErrWithdrawalDispatchChanged
 	}
@@ -46,7 +48,7 @@ func (m *Manager) BeginWithdrawalDispatch(ctx context.Context, provider string, 
 	}
 	var actual WithdrawalForCustody
 	var accountID string
-	err = tx.QueryRow(ctx, `SELECT w.id::text,w.user_id::text,c.external_vault_id,
+	err = tx.QueryRow(ctx, `SELECT w.id::text,w.user_id::text,a.id::text,c.external_vault_id,
         a.custody_asset_id,a.network,w.destination_address,w.destination_tag,
         w.amount_atomic::text,a.decimals,w.account_id::text
         FROM withdrawals w JOIN assets a ON a.id=w.asset_id
@@ -54,7 +56,7 @@ func (m *Manager) BeginWithdrawalDispatch(ctx context.Context, provider string, 
         WHERE w.id=$1 AND w.status='approved' AND w.provider_transaction_id IS NULL
         AND a.status='enabled' AND a.custody_asset_id<>'' AND c.external_vault_id<>''
         FOR UPDATE OF w FOR SHARE OF a,c`, expected.ID, provider).Scan(
-		&actual.ID, &actual.UserID, &actual.SourceVaultID, &actual.CustodyAssetID,
+		&actual.ID, &actual.UserID, &actual.AssetID, &actual.SourceVaultID, &actual.CustodyAssetID,
 		&actual.Network, &actual.DestinationAddress, &actual.DestinationTag,
 		&actual.AmountAtomic, &actual.AssetDecimals, &accountID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -114,29 +116,111 @@ func (m *Manager) BeginWithdrawalDispatch(ctx context.Context, provider string, 
 	if !held {
 		return false, ErrInsufficientWithdrawalBalance
 	}
+	var routeID any
+	var capacityRoute WithdrawalCapacityRoute
+	if entitlement.enforced && capacity == nil {
+		return false, ErrWithdrawalCapacityRouteUnavailable
+	}
+	if capacity != nil {
+		route, _, routeErr := capacityRouteInTx(ctx, tx, capacity.RouteID)
+		if routeErr != nil {
+			return false, routeErr
+		}
+		if route.AssetID != actual.AssetID || route.Provider != provider || route.Environment != capacity.Environment || route.Network != actual.Network ||
+			route.ProviderAssetID != actual.CustodyAssetID || route.AssetDecimals != actual.AssetDecimals {
+			return false, ErrWithdrawalCapacityRouteUnavailable
+		}
+		var databaseNow time.Time
+		if err = tx.QueryRow(ctx, `SELECT now()`).Scan(&databaseNow); err != nil {
+			return false, err
+		}
+		if capacity.ObservedAt.IsZero() || capacity.ObservedAt.After(databaseNow.Add(time.Second)) ||
+			capacity.ObservedAt.Before(databaseNow.Add(-time.Duration(route.MaxObservationAgeSeconds)*time.Second)) {
+			return false, ErrWithdrawalCapacityObservation
+		}
+		amount, amountErr := parseCapacityAtomic(actual.AmountAtomic)
+		assetAvailable, assetErr := parseCapacityAtomic(capacity.AssetAvailable)
+		feeAvailable, feeAvailableErr := parseCapacityAtomic(capacity.FeeAvailable)
+		feeRequired, feeErr := parseCapacityAtomic(capacity.FeeRequired)
+		maxFee, maxFeeErr := parseCapacityAtomic(route.MaxFeeAtomic)
+		if amountErr != nil || assetErr != nil || feeAvailableErr != nil || feeErr != nil || maxFeeErr != nil {
+			return false, ErrWithdrawalCapacityObservation
+		}
+		if feeRequired.Cmp(maxFee) > 0 {
+			return false, ErrWithdrawalCustodyCapacity
+		}
+		if err = lockCapacity(ctx, tx, provider, actual.SourceVaultID, route.ProviderAssetID, route.FeeProviderAssetID); err != nil {
+			return false, err
+		}
+		assetOpen, openErr := openCapacity(ctx, tx, provider, actual.SourceVaultID, route.ProviderAssetID)
+		if openErr != nil {
+			return false, openErr
+		}
+		if route.ProviderAssetID == route.FeeProviderAssetID {
+			if assetAvailable.Cmp(feeAvailable) != 0 {
+				return false, ErrWithdrawalCapacityObservation
+			}
+			required := new(big.Int).Add(assetOpen, amount)
+			required.Add(required, feeRequired)
+			if required.Cmp(assetAvailable) > 0 {
+				return false, ErrWithdrawalCustodyCapacity
+			}
+		} else {
+			if new(big.Int).Add(assetOpen, amount).Cmp(assetAvailable) > 0 {
+				return false, ErrWithdrawalCustodyCapacity
+			}
+			feeOpen, openErr := openCapacity(ctx, tx, provider, actual.SourceVaultID, route.FeeProviderAssetID)
+			if openErr != nil {
+				return false, openErr
+			}
+			if new(big.Int).Add(feeOpen, feeRequired).Cmp(feeAvailable) > 0 {
+				return false, ErrWithdrawalCustodyCapacity
+			}
+		}
+		capacityRoute = route
+		routeID = route.RouteID
+	}
 	payload, err := json.Marshal(actual)
 	if err != nil {
 		return false, err
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO withdrawal_dispatches
-        (withdrawal_id,provider,request,entitlement_enforced,credited_deposits_atomic,committed_withdrawals_atomic)
-        VALUES($1,$2,$3::jsonb,$4,NULLIF($5,'')::numeric,NULLIF($6,'')::numeric)`,
-		actual.ID, provider, payload, entitlement.enforced, entitlement.credited, entitlement.committed)
+		(withdrawal_id,provider,request,entitlement_enforced,credited_deposits_atomic,committed_withdrawals_atomic,capacity_route_id)
+		VALUES($1,$2,$3::jsonb,$4,NULLIF($5,'')::numeric,NULLIF($6,'')::numeric,$7)`,
+		actual.ID, provider, payload, entitlement.enforced, entitlement.credited, entitlement.committed, routeID)
 	if err != nil {
 		return false, err
 	}
+	if capacity != nil {
+		_, err = tx.Exec(ctx, `INSERT INTO custody_capacity_reservations
+			(withdrawal_id,route_id,provider,source_vault_id,provider_asset_id,asset_amount_atomic,
+			 asset_available_atomic,fee_provider_asset_id,fee_amount_atomic,fee_available_atomic,
+			 observed_at,asset_block_height,asset_block_hash,fee_block_height,fee_block_hash)
+			VALUES($1,$2,$3,$4,$5,$6::numeric,$7::numeric,$8,$9::numeric,$10::numeric,$11,$12,$13,$14,$15)`,
+			actual.ID, capacity.RouteID, provider, actual.SourceVaultID, actual.CustodyAssetID,
+			actual.AmountAtomic, capacity.AssetAvailable, capacityRoute.FeeProviderAssetID,
+			capacity.FeeRequired, capacity.FeeAvailable, capacity.ObservedAt,
+			capacity.AssetBlockHeight, capacity.AssetBlockHash, capacity.FeeBlockHeight, capacity.FeeBlockHash)
+		if err != nil {
+			return false, err
+		}
+	}
 	// No addresses in the general audit/outbox: the exact payload stays in the
 	// dispatch table; the external id is always the withdrawal UUID.
-	evidence, err := json.Marshal(map[string]string{"withdrawal_id": actual.ID, "provider": provider})
+	evidence := map[string]string{"withdrawal_id": actual.ID, "provider": provider}
+	if capacity != nil {
+		evidence["capacity_route_id"] = capacity.RouteID
+	}
+	auditEvidence, err := json.Marshal(evidence)
 	if err != nil {
 		return false, err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(actor_type,action,resource_type,resource_id,metadata)
-        VALUES('system','withdrawal.dispatch_started','withdrawal',$1,$2::jsonb)`, actual.ID, evidence); err != nil {
+		VALUES('system','withdrawal.dispatch_started','withdrawal',$1,$2::jsonb)`, actual.ID, auditEvidence); err != nil {
 		return false, err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO outbox_events(event_type,aggregate_type,aggregate_id,payload)
-        VALUES('withdrawal.dispatch_started','withdrawal',$1,$2::jsonb)`, actual.ID, evidence); err != nil {
+		VALUES('withdrawal.dispatch_started','withdrawal',$1,$2::jsonb)`, actual.ID, auditEvidence); err != nil {
 		return false, err
 	}
 	if err = tx.Commit(ctx); err != nil {
