@@ -96,12 +96,19 @@ the dispatch, audit and outbox. No route is seeded or enabled by migration.
 Files: migration 000071 custody capacity up/down, datamanager capacity/dispatch,
 withdrawal worker and PostgreSQL/unit tests, plus this plan.
 
-Current task: provider reconciliation for submitted and unknown dispatches.
+Completed task: provider reconciliation for submitted and unknown dispatches.
 Use the stable external withdrawal ID and fresh provider observations to record
 an immutable consumed or safely released capacity outcome. A timeout, missing
 ACK or single not-found response never releases capacity or rearms submission.
-Define retry windows and repeated-negative evidence, preserve one-shot dispatch,
-and test completed, failed, delayed, conflicting and unknown provider outcomes.
+Provider-confirmed completed/failed outcomes close capacity atomically with the
+ledger transition. Successful not-found observations are retained and rate-limited
+but never auto-release funds. Provider errors create no evidence or state change.
+
+Current task: pre-rollout legacy dispatch audit and controlled staging release.
+Inventory every dispatch created before capacity reservations, reconcile it without
+blind resubmission, verify no overlapping old/new withdrawal worker, and approve
+route mappings/fee caps separately before enabling readiness. Then run genuine
+deposit-withdrawal browser tests before any customer test-money grants.
 
 Completed increment: durable withdrawal submission boundary. Added immutable one-shot
 dispatch evidence, revalidate controls/eligibility/net deposits and held funds,
@@ -151,9 +158,12 @@ pass. Outstanding audit, frontend, custody, lifecycle and release tasks remain o
   deposit-ceiling and held-journal checks; prove concurrency and lost-ACK retention.
 - [x] Add maker-checker custody routes, fresh exact token/gas observations,
   fee caps, sorted capacity locks and atomic immutable dispatch reservations.
-- [ ] Complete provider reconciliation. Audit and drain legacy in-flight dispatch
-  before worker rollout; no overlapping old/new submitters. A committed intent
-  alone is not proof of broadcast or non-submission.
+- [x] Reconcile capacity-backed dispatches by stable external ID; retain immutable
+  not-found observations and close consumed/released capacity only on explicit
+  provider terminal outcomes in the ledger transaction.
+- [ ] Audit and drain legacy in-flight dispatch before worker rollout; no overlapping
+  old/new submitters. A committed intent alone is not proof of broadcast or
+  non-submission.
 - [ ] Issue bounded approved treasury inventory, then allocate through audited
   maker activation with shared sorted locks. No synthesized deposit events.
 - [ ] Implement any explicit custody/internal_spot bridge: journals balanced

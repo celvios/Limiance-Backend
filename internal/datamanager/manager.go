@@ -2672,6 +2672,16 @@ func (m *Manager) RecordWithdrawalCustodyUpdate(ctx context.Context, input Withd
 	if err != nil {
 		return false, err
 	}
+	capacityOutcome := "released"
+	if nextStatus == "completed" {
+		capacityOutcome = "consumed"
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO custody_capacity_terminal_events
+		(withdrawal_id,outcome,provider_transaction_id,observed_at)
+		SELECT $1,$2,$3,now() FROM custody_capacity_reservations WHERE withdrawal_id=$1
+		ON CONFLICT (withdrawal_id) DO NOTHING`, withdrawalID, capacityOutcome, input.ProviderTransactionID); err != nil {
+		return false, err
+	}
 	payload, err := json.Marshal(map[string]string{"withdrawal_id": withdrawalID, "provider_transaction_id": input.ProviderTransactionID, "transaction_hash": input.TransactionHash})
 	if err != nil {
 		return false, err

@@ -31,8 +31,20 @@ func main() {
 		log.Fatal(err)
 	}
 	policy := custody.RoutePolicy{Environment: cfg.Environment, Mode: cfg.CustodyMode, SelfCustodyTestnetEnabled: cfg.SelfCustodyTestnetEnabled, TestnetOnly: cfg.Environment == "staging"}
-	worker := withdrawals.NewWorker(datamanager.New(pool), provider, provider.ProviderID(), policy)
+	data := datamanager.New(pool)
+	worker := withdrawals.NewWorker(data, provider, provider.ProviderID(), policy)
+	var reconciler *withdrawals.Reconciler
+	if observer, ok := provider.(custody.WithdrawalObserver); ok {
+		reconciler = withdrawals.NewReconciler(data, observer, provider.ProviderID())
+	}
 	for {
+		if reconciler != nil {
+			if _, err := reconciler.RunOnce(ctx); err != nil {
+				log.Printf("withdrawal reconciliation failed: %v", err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+		}
 		if _, err := worker.RunOnce(ctx); err != nil {
 			log.Printf("withdrawal worker failed: %v", err)
 			time.Sleep(5 * time.Second)
