@@ -104,21 +104,43 @@ Provider-confirmed completed/failed outcomes close capacity atomically with the
 ledger transition. Successful not-found observations are retained and rate-limited
 but never auto-release funds. Provider errors create no evidence or state change.
 
-Current task: pre-rollout legacy dispatch audit and controlled staging release.
-Inventory every dispatch created before capacity reservations, reconcile it without
-blind resubmission, verify no overlapping old/new withdrawal worker, and approve
-route mappings/fee caps separately before enabling readiness. Then run genuine
-deposit-withdrawal browser tests before any customer test-money grants.
+Completed task: pre-rollout legacy dispatch audit and controlled staging release.
+Every dispatch created before capacity reservations was reconciled by stable
+external ID without resubmission. API revision 118 and withdrawal revision 36 now
+run the immutable image digest recorded below. Route mappings/fee caps remain
+default-off and require separate approval before any capacity-enforced route is
+enabled. Genuine deposit-withdrawal browser evidence remains outstanding.
 
-Fresh read-only staging evidence on 2026-09-06: API revision 117 (2/2) and
-withdrawal revision 35 (1/1) were stable. The named approver had no balances or
-transaction history. The named operator had three withdrawals still recorded as
-submitted: 0.002 ETH on Sepolia and 3 SOL on Solana testnet remained held. Fresh
-Fireblocks sandbox external-ID lookups reported all three COMPLETED with distinct
-provider transaction IDs and transaction hashes. Forty Fireblocks receipts existed,
-eight were unprocessed; operational queues were empty except 19 messages in the
-unrouted quarantine. Do not deploy or enable readiness until the three terminal
-outcomes are applied idempotently and the eight receipts are classified.
+Fresh staging evidence on 2026-09-06: Fireblocks sandbox external-ID lookups
+reported the three legacy withdrawals COMPLETED with distinct provider IDs and
+transaction hashes. Controlled reconciliation task
+eed4bc0ee07248bda381a6b5043604f0 applied all three terminal outcomes once; the
+ledger now records completed status and zero legacy ETH/SOL holds. The remaining
+1 SOL hold belongs to a separate pending-approval request. Eight signed, stored
+deposit receipts were classified as four confirming/completed testnet deposit
+pairs. A malformed operational replay was isolated and removed by exact receipt
+ID without processing; a file-backed valid replay then drained successfully.
+Read-only audit task 32151eab01454bb6ac93718d696644bc exited zero with no
+unprocessed receipts. PostgreSQL reports 40 Fireblocks receipts, zero unprocessed.
+
+Migrations through 000072 were applied by task
+615ae515844a41a4aec4afcee4fd7ca1. API revision 118 is stable 2/2 and withdrawal
+revision 36 stable 1/1 on image digest
+sha256:1a5a3a083018d1dae201775dc43bf9d602c8116111238b63063b3139a6f1bb09.
+The deposit worker is stable 1/1. Public health returned 200. A zero-count handoff
+was used for withdrawals; ECS briefly retained an old deployment task during its
+own drain, but final inspection proved revision 36 is the sole running worker and
+its log stream contains no errors. Test-money control, recipients and routes
+remain unconfigured/default-off; no customer grant was issued by this release.
+
+Current task: minimal staging-only issuance operations. The user explicitly chose
+not to build a temporary HTTP/frontend administration surface. Provide a narrow
+container command for read-only inspection, audited pilot preparation, proposal
+and independent approval. It must use exact server-fetched reference prices,
+internal_spot assets only, one active UTA, payload-bound idempotency and explicit
+staging confirmation. It creates test_money_issuance journals only, never deposits
+or withdrawal entitlement. Exact token allocations and grant execution remain a
+separate explicit decision.
 
 Completed increment: durable withdrawal submission boundary. Added immutable one-shot
 dispatch evidence, revalidate controls/eligibility/net deposits and held funds,
@@ -152,9 +174,10 @@ pass. Outstanding audit, frontend, custody, lifecycle and release tasks remain o
   payload-bound idempotency, sorted locks, atomic quota use and audit/outbox.
 - [x] Implement isolated customer grant policy/service and immutable history,
   with real PostgreSQL transaction, concurrency, rollback and idempotency tests.
-- [ ] Complete issuance integration: trusted independent-reference adapter,
-  reviewed policy/recipient administration, read/proposal/approval API contracts,
-  treasury-specific allocation limits and runtime wiring after safety gates.
+- [x] Complete the deliberately reduced issuance integration: trusted independent-
+  reference adapter plus staging-only inspect/prepare/propose/approve command,
+  reviewed policy/recipient preparation and runtime container wiring. No HTTP or
+  frontend administration contract is in scope for this disposable pilot.
 - [ ] Enforce test/mainnet isolation before enabling issuance: deployment/DB
   identity, custody workspace/source, chain verification and signing allowlist.
   Reject mismatched startup/configuration and prohibit production import.
@@ -162,7 +185,7 @@ pass. Outstanding audit, frontend, custody, lifecycle and release tasks remain o
   funds can reach an existing withdrawal path, including bought-back-token tests.
 - [x] Enforce the net-deposit ceiling at withdrawal admission with immutable
   evidence, user/asset serialization, lifecycle recovery and bought-back tests.
-- [ ] Finish pre-broadcast revalidation, durable dispatch claims, custody/fee
+- [x] Finish pre-broadcast revalidation, durable dispatch claims, custody/fee
   reservation and explicit failed/unknown-outcome recovery before readiness.
 - [x] Build durable one-shot dispatch boundary with fresh database eligibility,
   deposit-ceiling and held-journal checks; prove concurrency and lost-ACK retention.
@@ -171,7 +194,7 @@ pass. Outstanding audit, frontend, custody, lifecycle and release tasks remain o
 - [x] Reconcile capacity-backed dispatches by stable external ID; retain immutable
   not-found observations and close consumed/released capacity only on explicit
   provider terminal outcomes in the ledger transaction.
-- [ ] Audit and drain legacy in-flight dispatch before worker rollout; no overlapping
+- [x] Audit and drain legacy in-flight dispatch before worker rollout; no overlapping
   old/new submitters. A committed intent alone is not proof of broadcast or
   non-submission.
 - [ ] Issue bounded approved treasury inventory, then allocate through audited
@@ -238,6 +261,51 @@ Each implementation task reports full paths, SQL, core logic, proving tests,
 mapping and limitations, then receives a domain-named commit. Preserve existing
 handoff edits and package-lock.json. User subsequently authorized domain commits
 and Git pushes. Staging deployment/activation still requires the safety gates.
+
+## Minimal staging issuance command evidence (2026-09-06)
+
+Created:
+
+- C:/Users/toluk/Desktop/Limiance Backend/cmd/staging-test-money/main.go
+- C:/Users/toluk/Desktop/Limiance Backend/cmd/staging-test-money/main_test.go
+- C:/Users/toluk/Desktop/Limiance Backend/internal/testmoney/configure.go
+- C:/Users/toluk/Desktop/Limiance Backend/internal/testmoney/configure_test.go
+- C:/Users/toluk/Desktop/Limiance Backend/internal/testmoney/references.go
+- C:/Users/toluk/Desktop/Limiance Backend/internal/testmoney/references_test.go
+
+Modified:
+
+- C:/Users/toluk/Desktop/Limiance Backend/Dockerfile
+- C:/Users/toluk/Desktop/Limiance Backend/STAGING_TEST_MONEY_PLAN.md
+
+No schema change. The command has no HTTP route. Mutating actions require both
+APP_ENV=staging and --confirm-staging. Pilot preparation verifies distinct active
+treasury operator/approver roles, explicit named recipients, and enabled
+internal_spot assets; its normalized payload is idempotency-bound under a database
+advisory lock. The global ceiling is exactly the 10,000-USDT atomic limit times
+the number of named recipients. Configuration, audit and outbox commit together.
+
+Proposal resolves exactly one active recipient UTA and exact internal_spot asset.
+Approval uses two distinct successful server-configured venues selected from
+Bybit, Binance, Coinbase, Kraken and Gate. Bid/ask strings are converted and
+rounded conservatively with big.Int at USDT scale 8; float64 and requester-supplied
+prices are never used. Existing service approval rechecks policy, roles, recipient,
+asset, quota and distinct checker in the posting transaction. Grants remain
+balanced test_money_issuance journals and create no deposit or entitlement event.
+
+Focused command and package tests pass. Migration-backed PostgreSQL tests passed
+in disposable container limiance-testmoney-pg-20260906, which was removed after
+the run. New cases prove configuration idempotency, audit/outbox, exact ceiling,
+role failure, payload conflict and production rejection. Reference tests prove
+two distinct venues, deterministic duplicate handling, exact sub-atomic rounding,
+crossed/missing quotes and custody-asset rejection. Full Go suite passed without
+the integration variable; final vet/full-suite checks are recorded with the commit.
+
+Remaining before grants: choose exact distinct token allocations totaling no more
+than 10,000 USDT per tester, build and deploy the command image, inspect current
+UTA/assets/control, prepare the explicit pilot, then perform separate propose and
+approve invocations. Genuine order lifecycle and deposit-only withdrawal browser
+evidence are still required before broader release; no grant implies readiness.
 
 ## Issuance core evidence (2026-09-05)
 
