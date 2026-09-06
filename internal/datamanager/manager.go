@@ -2556,7 +2556,8 @@ func (m *Manager) ApprovedWithdrawals(ctx context.Context, provider string, limi
 		JOIN assets a ON a.id=w.asset_id
 		JOIN custody_wallets c ON c.user_id=w.user_id AND c.provider=$1 AND c.status='active'
 		WHERE w.status='approved' AND w.provider_transaction_id IS NULL AND a.status='enabled' AND a.custody_asset_id <> ''
-		ORDER BY w.created_at FOR UPDATE SKIP LOCKED LIMIT $2`, provider, limit)
+		AND NOT EXISTS(SELECT 1 FROM withdrawal_dispatches d WHERE d.withdrawal_id=w.id)
+		ORDER BY w.created_at,w.id LIMIT $2`, provider, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -2573,6 +2574,9 @@ func (m *Manager) ApprovedWithdrawals(ctx context.Context, provider string, limi
 }
 
 func (m *Manager) MarkWithdrawalSubmitted(ctx context.Context, withdrawalID, providerTransactionID string) error {
+	if withdrawalID == "" || providerTransactionID == "" {
+		return ErrWithdrawalDispatchChanged
+	}
 	tx, err := m.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -2581,6 +2585,16 @@ func (m *Manager) MarkWithdrawalSubmitted(ctx context.Context, withdrawalID, pro
 	var changed bool
 	err = tx.QueryRow(ctx, `UPDATE withdrawals SET status='submitted',provider_transaction_id=$2,custody_submitted_at=now(),custody_updated_at=now(),custody_error='',updated_at=now() WHERE id=$1 AND status='approved' AND provider_transaction_id IS NULL RETURNING true`, withdrawalID, providerTransactionID).Scan(&changed)
 	if errors.Is(err, pgx.ErrNoRows) {
+		// An exact ACK replay is harmless, including after a terminal webhook.
+		// A conflicting ACK must not be reported as a successful submission.
+		var same bool
+		err = tx.QueryRow(ctx, `SELECT COALESCE(provider_transaction_id=$2,FALSE) FROM withdrawals WHERE id=$1`, withdrawalID, providerTransactionID).Scan(&same)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && !same) {
+			return ErrWithdrawalDispatchChanged
+		}
+		if err != nil {
+			return err
+		}
 		return tx.Commit(ctx)
 	}
 	if err != nil {

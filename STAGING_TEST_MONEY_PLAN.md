@@ -79,6 +79,16 @@ silently moving an entitlement to another token or network.
 
 ## Ordered implementation checklist
 
+Current increment: durable withdrawal submission boundary. Add immutable one-shot
+dispatch evidence, revalidate controls/eligibility/net deposits and held funds,
+and commit audit/outbox before a worker may call custody. Competing workers and
+restarts must not resubmit an uncertain attempt. This increment does not implement
+provider reconciliation or custody/fee reservations and cannot enable readiness.
+Files: internal/datamanager/withdrawal_dispatch.go, scoped manager.go/worker.go,
+worker tests, internal/testmoney/withdrawal_dispatch_test.go, migration
+000070_withdrawal_dispatch up/down and this plan. Test concurrency, lost ACK,
+failed commit, stale payload, revoked eligibility and deposit reorg before dispatch.
+
 Completed task: withdrawal admission enforcement in the shared transaction layer.
 Files: new internal/datamanager/withdrawal_entitlement.go and database tests;
 new migration 000069_withdrawal_entitlement; scoped RequestWithdrawal and HTTP
@@ -113,6 +123,11 @@ pass. Outstanding audit, frontend, custody, lifecycle and release tasks remain o
   evidence, user/asset serialization, lifecycle recovery and bought-back tests.
 - [ ] Finish pre-broadcast revalidation, durable dispatch claims, custody/fee
   reservation and explicit failed/unknown-outcome recovery before readiness.
+- [x] Build durable one-shot dispatch boundary with fresh database eligibility,
+  deposit-ceiling and held-journal checks; prove concurrency and lost-ACK retention.
+- [ ] Complete provider reconciliation and capacity/fee reservation. Audit and
+  drain legacy in-flight dispatch before worker rollout; no overlapping old/new
+  submitters. A committed intent alone is not proof of broadcast or non-submission.
 - [ ] Issue bounded approved treasury inventory, then allocate through audited
   maker activation with shared sorted locks. No synthesized deposit events.
 - [ ] Implement any explicit custody/internal_spot bridge: journals balanced
@@ -175,7 +190,8 @@ endpoints/arithmetic against code/OpenAPI. Skips do not count as passes.
 
 Each implementation task reports full paths, SQL, core logic, proving tests,
 mapping and limitations, then receives a domain-named commit. Preserve existing
-handoff edits and package-lock.json. No push/deployment for the isolated core.
+handoff edits and package-lock.json. User subsequently authorized domain commits
+and Git pushes. Staging deployment/activation still requires the safety gates.
 
 ## Issuance core evidence (2026-09-05)
 
@@ -291,3 +307,73 @@ satisfy actual custody withdrawal, live-order, browser or full Section 9 gates.
 Next: durable pre-broadcast claims/revalidation and custody capacity/fees, then
 issuance adapter/API integration and reviewed staging activation. Preserve all
 other trading, frontend, audit, funding and release tasks above.
+
+## Withdrawal dispatch boundary evidence (2026-09-05)
+
+Created under C:/Users/toluk/Desktop/Limiance Backend:
+
+- internal/datamanager/withdrawal_dispatch.go
+- internal/testmoney/withdrawal_dispatch_test.go
+- migrations/000070_withdrawal_dispatch.up.sql
+- migrations/000070_withdrawal_dispatch.down.sql
+
+Modified under the same root:
+
+- internal/datamanager/manager.go
+- internal/withdrawals/worker.go
+- internal/withdrawals/worker_test.go
+- STAGING_TEST_MONEY_PLAN.md
+
+SQL adds withdrawal_dispatches keyed uniquely by withdrawal_id, with provider,
+exact request JSON, enforcement mode and net-deposit/commitment evidence.
+UPDATE/DELETE/TRUNCATE reject mutation; downgrade refuses recorded dispatches.
+No ledger balances, entitlement, controls or external custody state are created
+by this migration.
+
+Core worker boundary:
+
+```go
+claimed, err := w.data.BeginWithdrawalDispatch(ctx, w.providerID, item)
+if err != nil { return processed, err }
+if !claimed { continue }
+// Only this successful caller may now invoke CreateWithdrawal.
+```
+
+The database transaction rechecks the withdrawal control, current deposit ceiling
+(including this withdrawal), active user/account/KYC including expiration, current
+asset/vault route and exact candidate payload. A balanced posted original hold,
+no terminal compensation and enough posted held balance are required. Shared
+control and eligibility locks plus entitlement/withdrawal/shared-ledger locks
+serialize the boundary. Intent, audit and outbox commit together before custody.
+There is no lease or automatic rearm. Lost ACK, empty ACK, database ACK failure or
+process death after commit retain the intent and hold. Candidate queries exclude
+started attempts, and a stale competing candidate cannot claim again. The external
+id remains the withdrawal UUID. Exact ACK replay is harmless; empty or conflicting
+ACKs are rejected, including after terminal updates.
+
+Six added PostgreSQL tests cover eight concurrent claimants yielding one winner,
+restart exclusion/hold retention, immutable evidence and guarded rollback, reorg
+and eligibility revocation, expiry, payload/route changes, missing posted hold,
+outbox rollback and safe pre-commit retry, non-issuance compatibility and ACK replay.
+Two added worker tests cover lost/empty ACK, database ACK failure, exact provider
+payload and no custody call when the dispatch commit fails.
+
+The original full-suite attempt found an assertion counting legacy request events
+as custody ACKs. Request creation already uses withdrawal.submitted; the corrected
+test distinguishes ACKs by provider_transaction_id without changing that contract.
+
+This is only the durable submission-boundary increment, not the full withdrawal
+safety/release gate. Next work must implement actual custody/fee capacity reads and
+reservations, provider-identity-bound reconciliation, safe non-submission releases
+and per-request rejection/queue behavior so invalid candidates cannot starve others.
+Audit/drain legacy approved or in-flight attempts before replacing old workers:
+the old binary does not observe dispatch intents. Database revalidation is not
+proof of on-chain finality or sufficient custody; reorg and reconciliation remain
+end-to-end gates. A stopped control prevents new claims, not an already committed
+external call; command cessation must be observed separately.
+
+Test mapping: approved deposit-only withdrawal and ambiguous-outcome acceptance
+criteria; supplements Section 7 idempotency and Section 9 ledger/audit evidence.
+No actual custody transaction, browser, live matcher or Section 9 sign-off claimed.
+Readiness, issuance, treasury allocations and live quoting remain unactivated.
+Both requested 10,000-USDT-equivalent mixed-token grants remain pending.

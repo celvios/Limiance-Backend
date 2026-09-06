@@ -14,6 +14,7 @@ type CustodySubmitter interface {
 
 type WithdrawalData interface {
 	ApprovedWithdrawals(context.Context, string, int) ([]datamanager.WithdrawalForCustody, error)
+	BeginWithdrawalDispatch(context.Context, string, datamanager.WithdrawalForCustody) (bool, error)
 	MarkWithdrawalSubmitted(context.Context, string, string) error
 }
 
@@ -48,6 +49,16 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 		amount, err := custody.AtomicToProviderAmount(item.AmountAtomic, item.AssetDecimals)
 		if err != nil {
 			return processed, err
+		}
+		// Commit the durable boundary only after local validation, immediately
+		// before the external call. An error after this point is an unknown
+		// outcome, not permission to retry or release held funds.
+		claimed, err := w.data.BeginWithdrawalDispatch(ctx, w.providerID, item)
+		if err != nil {
+			return processed, err
+		}
+		if !claimed {
+			continue
 		}
 		result, err := w.provider.CreateWithdrawal(ctx, custody.WithdrawalRequest{
 			SourceVaultID:  item.SourceVaultID,
