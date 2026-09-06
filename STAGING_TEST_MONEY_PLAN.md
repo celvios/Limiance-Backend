@@ -110,6 +110,16 @@ blind resubmission, verify no overlapping old/new withdrawal worker, and approve
 route mappings/fee caps separately before enabling readiness. Then run genuine
 deposit-withdrawal browser tests before any customer test-money grants.
 
+Fresh read-only staging evidence on 2026-09-06: API revision 117 (2/2) and
+withdrawal revision 35 (1/1) were stable. The named approver had no balances or
+transaction history. The named operator had three withdrawals still recorded as
+submitted: 0.002 ETH on Sepolia and 3 SOL on Solana testnet remained held. Fresh
+Fireblocks sandbox external-ID lookups reported all three COMPLETED with distinct
+provider transaction IDs and transaction hashes. Forty Fireblocks receipts existed,
+eight were unprocessed; operational queues were empty except 19 messages in the
+unrouted quarantine. Do not deploy or enable readiness until the three terminal
+outcomes are applied idempotently and the eight receipts are classified.
+
 Completed increment: durable withdrawal submission boundary. Added immutable one-shot
 dispatch evidence, revalidate controls/eligibility/net deposits and held funds,
 and commit audit/outbox before a worker may call custody. Competing workers and
