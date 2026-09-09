@@ -2,6 +2,7 @@ package testmoney
 
 import (
 	"errors"
+	"slices"
 	"testing"
 )
 
@@ -77,6 +78,22 @@ func TestPostgresConfigurePilotResolvesMixedCaseCatalogAssets(t *testing.T) {
 	}
 	if result.Assets["STETH"] != mixedAsset {
 		t.Fatalf("mixed-case asset mismatch: %#v", result.Assets)
+	}
+	if !slices.Equal(result.EnabledAssets, []string{"STETH"}) {
+		t.Fatalf("enabled asset evidence mismatch: %#v", result.EnabledAssets)
+	}
+	var selectedStatus, omittedStatus, pairStatus string
+	if err = f.pool.QueryRow(f.ctx, `SELECT status::text FROM assets WHERE id=$1`, mixedAsset).Scan(&selectedStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.pool.QueryRow(f.ctx, `SELECT status::text FROM assets WHERE symbol='AAVE' AND network='internal_spot'`).Scan(&omittedStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.pool.QueryRow(f.ctx, `SELECT status::text FROM trading_pairs WHERE symbol='STETHUSDT'`).Scan(&pairStatus); err != nil {
+		t.Fatal(err)
+	}
+	if selectedStatus != "enabled" || omittedStatus != "disabled" || pairStatus != "halted" {
+		t.Fatalf("unexpected activation boundary: selected=%s omitted=%s pair=%s", selectedStatus, omittedStatus, pairStatus)
 	}
 }
 

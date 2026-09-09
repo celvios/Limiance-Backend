@@ -27,18 +27,19 @@ type PilotConfigInput struct {
 }
 
 type PilotConfigResult struct {
-	PolicyID    string            `json:"policy_id"`
-	OperatorID  string            `json:"operator_id"`
-	ApproverID  string            `json:"approver_id"`
-	Recipients  map[string]string `json:"recipients"`
-	Assets      map[string]string `json:"assets"`
-	GlobalLimit string            `json:"global_limit_usdt_atomic"`
+	PolicyID      string            `json:"policy_id"`
+	OperatorID    string            `json:"operator_id"`
+	ApproverID    string            `json:"approver_id"`
+	Recipients    map[string]string `json:"recipients"`
+	Assets        map[string]string `json:"assets"`
+	EnabledAssets []string          `json:"enabled_assets"`
+	GlobalLimit   string            `json:"global_limit_usdt_atomic"`
 }
 
 // ConfigurePilot is a cold-path staging operation. It enables no recipient or
 // asset implicitly: both lists are explicit, normalized and included in the
-// idempotency hash and audit evidence. Disabled catalog assets may be represented
-// in policy, but existing proposal/approval checks still prohibit granting them.
+// idempotency hash and audit evidence. Only selected internal_spot ledger assets
+// are enabled; custody routes and trading-pair status are separate controls.
 func (s *Service) ConfigurePilot(ctx context.Context, input PilotConfigInput) (PilotConfigResult, error) {
 	input.OperatorEmail = strings.ToLower(strings.TrimSpace(input.OperatorEmail))
 	input.ApproverEmail = strings.ToLower(strings.TrimSpace(input.ApproverEmail))
@@ -92,6 +93,7 @@ func (s *Service) ConfigurePilot(ctx context.Context, input PilotConfigInput) (P
 		}
 		policy.Assets[id] = AssetPolicy{Network: network, Decimals: decimals}
 		result.Assets[symbol] = id
+		result.EnabledAssets = append(result.EnabledAssets, symbol)
 	}
 	if err = policy.Validate(); err != nil {
 		return PilotConfigResult{}, err
@@ -115,6 +117,15 @@ func (s *Service) ConfigurePilot(ctx context.Context, input PilotConfigInput) (P
 	}
 	if err != pgx.ErrNoRows {
 		return PilotConfigResult{}, err
+	}
+	// Asset inputs are normalized and sorted, so row locks are acquired in a
+	// deterministic order. The ID and network predicate prevent an equal-symbol
+	// custody route from being enabled by this staging-only operation.
+	for _, symbol := range result.EnabledAssets {
+		if _, err = tx.Exec(ctx, `UPDATE assets SET status='enabled'
+		 WHERE id=$1 AND network='internal_spot'`, result.Assets[symbol]); err != nil {
+			return PilotConfigResult{}, err
+		}
 	}
 	policyBody, _ := json.Marshal(policy)
 	if err = tx.QueryRow(ctx, `INSERT INTO test_money_policies(policy) VALUES($1) RETURNING id::text`, policyBody).Scan(&result.PolicyID); err != nil {

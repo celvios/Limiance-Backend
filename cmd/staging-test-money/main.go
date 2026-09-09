@@ -116,7 +116,7 @@ func parseOptions() options {
 	flag.StringVar(&opts.operatorEmail, "operator-email", "", "treasury operator email for pilot preparation")
 	flag.StringVar(&opts.approverEmail, "approver-email", "", "distinct treasury approver email for pilot preparation")
 	flag.StringVar(&opts.recipients, "recipients", "", "comma-separated named recipient emails")
-	flag.StringVar(&opts.assets, "assets", "", "comma-separated enabled internal_spot asset symbols")
+	flag.StringVar(&opts.assets, "assets", "", "comma-separated internal_spot asset symbols to represent and enable")
 	flag.StringVar(&opts.recipientEmail, "recipient-email", "", "named grant recipient email")
 	flag.StringVar(&opts.assetSymbol, "asset", "", "enabled internal_spot asset symbol")
 	flag.StringVar(&opts.amountAtomic, "amount-atomic", "", "exact integer asset amount")

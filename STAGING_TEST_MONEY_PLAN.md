@@ -1,6 +1,6 @@
 # Staging test-money implementation plan
 
-Date: 2026-09-05. Issuance core and withdrawal admission tested; integration and activation pending.
+Date: 2026-09-09. Issuance and withdrawal controls are tested; the bounded staging pilot is being activated.
 
 ## Approved policy
 
@@ -141,6 +141,13 @@ internal_spot assets only, one active UTA, payload-bound idempotency and explici
 staging confirmation. It creates test_money_issuance journals only, never deposits
 or withdrawal entitlement. Exact token allocations and grant execution remain a
 separate explicit decision.
+
+Activation increment in progress: pilot preparation explicitly enables only the
+selected internal_spot ledger identities in deterministic symbol order and records
+the complete selection in idempotency/audit evidence. Equal-symbol custody routes
+and trading-pair halt status are not changed. The pilot policy represents the full
+25-asset internal spot catalog including USDT; assets without trustworthy price
+evidence remain ineligible for approval even when their ledger identity is enabled.
 
 Completed increment: durable withdrawal submission boundary. Added immutable one-shot
 dispatch evidence, revalidate controls/eligibility/net deposits and held funds,
