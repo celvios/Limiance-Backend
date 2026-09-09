@@ -186,7 +186,7 @@ func grantTarget(ctx context.Context, pool *pgxpool.Pool, email, symbol string) 
 	if err != nil {
 		return "", "", "", err
 	}
-	err = pool.QueryRow(ctx, `SELECT id::text FROM assets WHERE symbol=$1 AND network='internal_spot' AND status='enabled'`, symbol).Scan(&asset)
+	err = pool.QueryRow(ctx, `SELECT id::text FROM assets WHERE upper(symbol)=upper($1) AND network='internal_spot' AND status='enabled'`, symbol).Scan(&asset)
 	if err == pgx.ErrNoRows {
 		return "", "", "", testmoney.ErrInput
 	}

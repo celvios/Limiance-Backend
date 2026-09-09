@@ -32,6 +32,7 @@ func (source *SpotReferenceSource) Observations(ctx context.Context, assetID str
 		return nil, ErrReference
 	}
 	symbol, network, err := source.lookup(ctx, assetID)
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
 	if err != nil || symbol == "" || symbol == "USDT" || network != "internal_spot" {
 		return nil, ErrReference
 	}

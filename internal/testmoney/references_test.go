@@ -35,6 +35,16 @@ func TestSpotReferenceSourceUsesTwoDistinctServerProviders(t *testing.T) {
 	}
 }
 
+func TestSpotReferenceSourceCanonicalizesCatalogSymbolCase(t *testing.T) {
+	now := time.Now().UTC()
+	lookup := func(context.Context, string) (string, string, error) { return "stETH", "internal_spot", nil }
+	provider := referenceProvider{ticker: marketdata.SpotTicker{Symbol: "STETHUSDT", Bid: "2500", Ask: "2500", ObservedAt: now}}
+	observations, err := NewSpotReferenceSource(lookup, []NamedSpotProvider{{Name: "one", Provider: provider}, {Name: "two", Provider: provider}}).Observations(context.Background(), "asset-1")
+	if err != nil || len(observations) != 2 {
+		t.Fatalf("mixed-case catalog symbol was not canonicalized: %#v, %v", observations, err)
+	}
+}
+
 func TestSpotReferenceSourceFailsClosed(t *testing.T) {
 	now := time.Now().UTC()
 	tests := []struct {

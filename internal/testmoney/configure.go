@@ -37,7 +37,8 @@ type PilotConfigResult struct {
 
 // ConfigurePilot is a cold-path staging operation. It enables no recipient or
 // asset implicitly: both lists are explicit, normalized and included in the
-// idempotency hash and audit evidence.
+// idempotency hash and audit evidence. Disabled catalog assets may be represented
+// in policy, but existing proposal/approval checks still prohibit granting them.
 func (s *Service) ConfigurePilot(ctx context.Context, input PilotConfigInput) (PilotConfigResult, error) {
 	input.OperatorEmail = strings.ToLower(strings.TrimSpace(input.OperatorEmail))
 	input.ApproverEmail = strings.ToLower(strings.TrimSpace(input.ApproverEmail))
@@ -82,7 +83,7 @@ func (s *Service) ConfigurePilot(ctx context.Context, input PilotConfigInput) (P
 	for _, symbol := range input.AssetSymbols {
 		var id, network string
 		var decimals int
-		err = tx.QueryRow(ctx, `SELECT id::text,network,decimals FROM assets WHERE symbol=$1 AND network='internal_spot' AND status='enabled'`, symbol).Scan(&id, &network, &decimals)
+		err = tx.QueryRow(ctx, `SELECT id::text,network,decimals FROM assets WHERE upper(symbol)=upper($1) AND network='internal_spot'`, symbol).Scan(&id, &network, &decimals)
 		if err == pgx.ErrNoRows {
 			return PilotConfigResult{}, ErrInput
 		}

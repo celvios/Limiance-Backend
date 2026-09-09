@@ -63,6 +63,23 @@ func TestPostgresConfigurePilotRejectsConflictsRolesAndProduction(t *testing.T) 
 	}
 }
 
+func TestPostgresConfigurePilotResolvesMixedCaseCatalogAssets(t *testing.T) {
+	f := databaseFixture(t)
+	var mixedAsset string
+	if err := f.pool.QueryRow(f.ctx, `SELECT id::text FROM assets WHERE symbol='stETH' AND network='internal_spot'`).Scan(&mixedAsset); err != nil {
+		t.Fatal(err)
+	}
+	input := f.pilotInput(t, "pilot-config-mixed-case")
+	input.AssetSymbols = []string{"steth"}
+	result, err := f.service.ConfigurePilot(f.ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Assets["STETH"] != mixedAsset {
+		t.Fatalf("mixed-case asset mismatch: %#v", result.Assets)
+	}
+}
+
 func (f *fixture) pilotInput(t *testing.T, key string) PilotConfigInput {
 	t.Helper()
 	var operatorEmail, approverEmail, recipientEmail string
