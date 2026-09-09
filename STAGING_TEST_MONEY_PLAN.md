@@ -149,6 +149,36 @@ and trading-pair halt status are not changed. The pilot policy represents the fu
 25-asset internal spot catalog including USDT; assets without trustworthy price
 evidence remain ineligible for approval even when their ledger identity is enabled.
 
+Staging activation evidence on 2026-09-09: commit bd21556c passed focused tests,
+the full Go suite, go vet and PostgreSQL-backed activation tests, then was pushed
+to origin/main. The staging-only executable was overlaid on the previously verified
+backend image without changing API, worker or migration layers. ECR digest
+sha256:2b89fea629199d8df6752c2ee3e85c93eae08382a5c497feda1342b8a79bb17d
+is registered as API task definition 121 and passed a one-off inspection; the
+long-running API service was not rolled forward because it does not expose this
+temporary administration surface.
+
+Policy 554e702f-7431-41e6-8ec7-7c2a7fbd4a8c explicitly enabled and represented
+all 25 internal_spot ledger assets, including USDT, for the two named recipients.
+It retained the aggregate 20,000 USDT ceiling. Toluk proposed every grant and
+Favour approved every executed grant, so proposer and approver remained distinct.
+For this staging pilot, Toluk remained the proposer and Favour remained the
+distinct approver; Favour was also an approved grant recipient. Production
+conflict-of-interest policy requires separate review.
+
+Eighteen grants produced eighteen distinct balanced issuance journals and nine
+available-balance credits per recipient. Exact approval-time values were
+9,895.08280012 USDT for toluking001@gmail.com across AAVE, ARB, BNB, ETH, OP,
+SHIB, TRX, USDC and WBTC; and 9,859.24574698 USDT for favourtolu57@gmail.com
+across ADA, AVAX, BTC, LINK, POL, SOL, UNI, USDe and XRP. Two optional ceiling-
+safe top-up requests were proposed but not approved and created no postings.
+Read-only ledger audits 774c326dcd7e4a86b81ab722646d7750 and
+1c21c41ad06c4c3faaa1760b1c821fda confirmed the credits and zero unprocessed
+custody receipts. Grants remain test_money_issuance records, not deposits, and
+create no withdrawal entitlement. Public verification returned healthy, all 24
+pairs halted, zero nonzero last-trade prices and zero nonzero volumes. No market-
+maker inventory or live quoting was released.
+
 Completed increment: durable withdrawal submission boundary. Added immutable one-shot
 dispatch evidence, revalidate controls/eligibility/net deposits and held funds,
 and commit audit/outbox before a worker may call custody. Competing workers and
@@ -176,7 +206,7 @@ pass. Outstanding audit, frontend, custody, lifecycle and release tasks remain o
 - [x] Record approved grant/withdrawal policy and this engineering plan.
 - [ ] Audit current DB roles, controls, balances, deposits, withdrawals, route
   mappings and downstream command cessation using reviewed read-only queries.
-- [ ] Build default-off staging issuance: non-spendable counterpart accounts,
+- [x] Build default-off staging issuance: non-spendable counterpart accounts,
   balanced journals, versioned limits, recipient/reason, proposal/approval roles,
   payload-bound idempotency, sorted locks, atomic quota use and audit/outbox.
 - [x] Implement isolated customer grant policy/service and immutable history,
