@@ -106,6 +106,27 @@ returns ErrKillSwitch and no command record exists. Staging deployment and a
 fresh stop interval with zero post-stop commands are still required before the
 command-cessation checklist can be marked complete.
 
+## Staging custody-route operations (2026-09-10)
+
+Created `cmd/staging-custody-routes/main.go` and `main_test.go`; modified the
+Dockerfile build list and this plan. No schema change. The command has no HTTP
+surface and is restricted to APP_ENV=staging. Inspection is read-only. Proposal
+and approval require an explicit staging confirmation, audited reason and
+idempotency key. The proposal actor must hold treasury_operator and the approval
+actor treasury_approver; the existing data-manager transaction rechecks both and
+forbids self-approval.
+
+Asset, network, provider ID and decimals are resolved from one exact enabled
+custody asset in PostgreSQL rather than accepted from the operator. The native fee
+asset is resolved independently on the same testnet. A human-readable exact fee
+cap is converted to integer atomic units without float64. The command fixes the
+provider and environment to fireblocks/staging, bounds observation freshness to
+1..30 seconds and emits only non-secret route/request identifiers. Unit tests
+prove mutations fail closed without confirmation, actor, reason, idempotency,
+asset/network/fee mapping, fee cap and freshness, and approval requires a request.
+Provider-workspace inspection, explicit fee-cap selection, separate proposal and
+approval, and a genuine small withdrawal remain required before routes are active.
+
 ## Entitlement design
 
 Use an immutable entitlement event stream keyed by user and exact custody asset
