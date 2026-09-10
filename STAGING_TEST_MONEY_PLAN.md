@@ -1,6 +1,6 @@
 # Staging test-money implementation plan
 
-Date: 2026-09-09. Issuance and withdrawal controls are tested; the bounded staging pilot is being activated.
+Date: 2026-09-10. Issuance and withdrawal controls are tested; live market-making remains blocked by the readiness evidence below.
 
 ## Approved policy
 
@@ -52,6 +52,39 @@ deferred. No extra frontend warning banner. Completion of this plan funds nothin
   Catalog entries do not prove signing authorization or mainnet isolation.
 - Current withdrawal request path checks available balance but does not maintain
   the newly required deposited-token entitlement. This model is not implemented.
+
+## Read-only staging readiness audit (2026-09-10)
+
+Created `C:/Users/toluk/Desktop/Limiance Backend/cmd/staging-readiness-audit/main.go`
+and `main_test.go`; modified the Dockerfile build list and this plan. No schema
+change. Commit ba5d599 passed the focused tests, full Go suite and go vet before
+push. The command is restricted to APP_ENV=staging, has no mutation statements
+or HTTP route, and emits a sanitized report of actual roles, controls, routes,
+balances/lifecycles and downstream market-maker evidence.
+
+The final audit image was derived from the verified staging base image and used
+only by task definition revision 125; no ECS service was updated. One-off task
+89835a93b1bf4cd4997c29d0a562cd94 exited zero. Earlier audit-only revisions failed
+closed before producing a report because the first layer lacked executable mode
+and two queries used assumed rather than migrated column names. The command now
+uses audit_events.occurred_at and derives dispatch lifecycle from withdrawals.
+
+Verified identities: Toluk is active with compliance, platform_administrator and
+treasury_operator roles; Favour is active with treasury_approver; the internal
+market-maker is active with no administrative role. Withdrawals, automatic
+withdrawals and conversions are enabled. Test-money is staging-bound and enabled
+with withdrawal limits ready, policy 554e702f-7431-41e6-8ec7-7c2a7fbd4a8c,
+18 grants and two unapproved requests. There are three completed withdrawals,
+one pending-approval withdrawal, no dispatch records, no open capacity reservation
+and zero unprocessed Fireblocks receipts.
+
+Market-maker control is enabled only in dry-run mode, with zero live commands,
+zero inventory journals, zero open orders, 18 enabled configurations, zero active
+pairs and all 24 pairs halted. The command log contains 3,357,910 dry-run records.
+The latest emergency stop was 2026-09-04 22:48:12.246544+00; 28 commands were
+recorded before the next activation at 22:54:21.197278+00. Therefore downstream
+command cessation is not proven. No custody withdrawal routes are configured.
+The current audit checklist item and every live-quoting/readiness gate remain open.
 
 ## Entitlement design
 

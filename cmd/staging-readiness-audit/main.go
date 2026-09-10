@@ -165,10 +165,10 @@ func main() {
 		fatal(err)
 	}
 	err = pool.QueryRow(ctx, `WITH stop AS (
-		SELECT max(created_at) AS at FROM audit_events WHERE action='market_maker.emergency_stopped'
+		SELECT max(occurred_at) AS at FROM audit_events WHERE action='market_maker.emergency_stopped'
 	), resumed AS (
-		SELECT min(created_at) AS at FROM audit_events,stop
-		WHERE action='market_maker.activation_approved' AND created_at>stop.at
+		SELECT min(occurred_at) AS at FROM audit_events,stop
+		WHERE action='market_maker.activation_approved' AND occurred_at>stop.at
 	) SELECT COALESCE(stop.at::text,''),COALESCE(resumed.at::text,''),
 		(SELECT count(*)::int FROM market_maker_command_log c
 		 WHERE stop.at IS NOT NULL AND c.created_at>stop.at
@@ -203,7 +203,9 @@ func main() {
 
 	out.PairStatuses = loadStatusCounts(ctx, pool, `SELECT status,count(*)::int FROM trading_pairs GROUP BY status ORDER BY status`)
 	out.WithdrawalStatuses = loadStatusCounts(ctx, pool, `SELECT status,count(*)::int FROM withdrawals GROUP BY status ORDER BY status`)
-	out.DispatchStatuses = loadStatusCounts(ctx, pool, `SELECT status,count(*)::int FROM withdrawal_dispatches GROUP BY status ORDER BY status`)
+	out.DispatchStatuses = loadStatusCounts(ctx, pool, `SELECT w.status,count(*)::int
+		FROM withdrawal_dispatches d JOIN withdrawals w ON w.id=d.withdrawal_id
+		GROUP BY w.status ORDER BY w.status`)
 	err = pool.QueryRow(ctx, `SELECT count(*)::int FROM custody_capacity_reservations r
 		WHERE NOT EXISTS(SELECT 1 FROM custody_capacity_terminal_events t WHERE t.withdrawal_id=r.withdrawal_id)`).Scan(&out.OpenReservations)
 	if err != nil {
