@@ -693,3 +693,55 @@ satisfies only the provider-observation portion of custody capacity and ambiguou
 outcome test items. It does not reserve capacity, select/verify the fee asset,
 bind observation freshness, reconcile a dispatch, or broadcast a real testnet
 withdrawal. Readiness, issuance, both tester grants and quoting remain off.
+
+## Bounded market-maker treasury evidence (2026-09-10)
+
+Task: create an audited source of non-withdrawable staging inventory for all
+reference-supported markets. This matters because genuine matching cannot start
+from the customer test grants, and direct balance edits would bypass the ledger.
+
+Created:
+
+- C:/Users/toluk/Desktop/Limiance Backend/cmd/staging-market-maker-inventory/main.go
+- C:/Users/toluk/Desktop/Limiance Backend/cmd/staging-market-maker-inventory/main_test.go
+- C:/Users/toluk/Desktop/Limiance Backend/internal/marketmaker/treasury.go
+- C:/Users/toluk/Desktop/Limiance Backend/internal/marketmaker/treasury_test.go
+- C:/Users/toluk/Desktop/Limiance Backend/internal/marketmaker/treasury_postgres_test.go
+- C:/Users/toluk/Desktop/Limiance Backend/migrations/000073_staging_market_maker_treasury.up.sql
+- C:/Users/toluk/Desktop/Limiance Backend/migrations/000073_staging_market_maker_treasury.down.sql
+
+Modified:
+
+- C:/Users/toluk/Desktop/Limiance Backend/Dockerfile
+- C:/Users/toluk/Desktop/Limiance Backend/STAGING_TEST_MONEY_PLAN.md
+
+Migration 000073 adds immutable proposal and approved-grant histories. Database
+triggers enforce distinct proposer and approver identities and reject update,
+delete and truncate. The down migration refuses to erase any recorded request.
+
+The staging-only service has no HTTP route. A treasury operator proposes an exact
+positive atomic amount for one enabled internal_spot asset with a payload-bound
+idempotency key. A different active treasury approver must approve it. Approval
+serializes the aggregate quota, rechecks both roles and the asset, uses the
+existing two-venue reference policy for non-USDT valuation, and fails closed on
+unsupported USDT precision. The aggregate lifetime ceiling is exactly 10,000
+USDT. It obtains sorted shared account/asset locks and atomically records a
+balanced market_maker_treasury_issuance journal, grant evidence, audit and outbox.
+The frozen issuance counterpart and active unowned treasury account cannot be
+silently reactivated from conflicting pre-existing states. No deposit, custody
+receipt or withdrawal entitlement is created.
+
+Tests prove staging isolation, exact USDT scaling, precision rejection, unsafe
+CLI option rejection, independent approval, exact idempotent approval replay,
+balanced postings, quota enforcement, atomic audit/outbox recording and immutable
+history against real PostgreSQL migrations. The full Go suite passed serially
+with the PostgreSQL integration URL before the final immutable-retry correction;
+the affected PostgreSQL/CLI tests and serial vet passed on the exact final code.
+A subsequent full-suite compile attempt was storage-blocked before tests ran and
+is not counted as a pass. External integrations without configured dependencies
+may still skip and do not count as deployed evidence.
+
+This satisfies the bounded audited treasury-source portion of the staging
+inventory and ledger/idempotency acceptance items. It does not issue inventory,
+activate a pair, prove a real match/settlement/replay, or authorize live quoting.
+Deployment, explicit per-asset proposals and independent approvals remain next.
