@@ -2,6 +2,23 @@
 
 Date: 2026-09-10. Issuance and withdrawal controls are tested; live market-making remains blocked by the readiness evidence below.
 
+## Staging emergency-stop proof command (2026-09-10)
+
+Created `cmd/staging-market-maker-control/main.go` and `main_test.go`; added the
+command to the Docker build list. There is no schema or HTTP change. Mutations
+require both `APP_ENV=staging` and `--confirm-staging`. The command resolves an
+active database identity and uses the existing activation service: stop accepts
+an authorized treasury actor, resume proposal requires the treasury operator,
+and resume approval requires the distinct treasury approver. Resume copies the
+latest approved reference-only payload and binds a new reason and idempotency key;
+it cannot release live orders or invent a new policy.
+
+Status reports the control mode, latest immutable emergency-stop audit time and
+exact number of command-log rows after that stop. The unit test proves mutation
+options fail closed. Focused tests, go vet and the full PostgreSQL-backed Go suite
+passed before deployment. Deployed stop/observe/resume evidence is recorded only
+after the staging exercise completes.
+
 ## Approved policy
 
 - Named testers receive individually proposed, independently approved grants.
