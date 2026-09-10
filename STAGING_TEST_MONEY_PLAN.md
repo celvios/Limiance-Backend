@@ -19,6 +19,31 @@ options fail closed. Focused tests, go vet and the full PostgreSQL-backed Go sui
 passed before deployment. Deployed stop/observe/resume evidence is recorded only
 after the staging exercise completes.
 
+Deployment evidence: commit aa326fe4 was pushed. API revision 127 completed at
+2/2 on the already verified API image. Market-data revision 4 completed at 1/1
+on immutable image digest
+`sha256:b6db212ce9d1b478fbcac5dc4cdeace89428d65ba487ccd53c90721d7d6d29f3`,
+which contains the serialized command claim and proof executable. Emergency-stop
+task 062bb4abf226417cbe5c650d0269cd7f exited zero at
+2026-09-10T15:03:36.125922Z. Independent task
+80cff67f25ce482a8d1e14940e28ab06 ran after a complete worker cycle and still
+observed zero commands after the stop. Toluk then proposed reference-only resume
+request 25a08457-0f32-4294-bcbf-aa9ba14b36ff; Favour independently approved it.
+The control returned to enabled, dry-run, kill-switch false. Final audit task
+4a6b07c457c54db5848a77f3decbba1e reports commands_during_stop=0,
+command_cessation_verified=true and live_command_count=0. This proves deployed
+cessation and reference-only recovery; it does not approve live quoting.
+
+Fireblocks preflight task 8c9712059ad945db81180d0dbd904794 verified the exact
+workspace identifiers BTC_TEST, ETH_TEST5 and USDC_ETH_TEST5_AN74. Toluk proposed
+and Favour approved three staging routes: BTC/bitcoin_testnet4 with BTC fee cap
+100000 atomic units; ETH/ethereum_sepolia with ETH fee cap
+10000000000000000 atomic units; and USDC/ethereum_sepolia with ETH fee cap
+10000000000000000 atomic units. All require observations no older than 15 seconds.
+Final inspect task 55a0bcc070a7401d99cfb2e03adc1b2d and the readiness audit
+confirmed each latest action is enable. No withdrawal was initiated and issued
+test-money still creates no withdrawal entitlement.
+
 ## Approved policy
 
 - Named testers receive individually proposed, independently approved grants.
