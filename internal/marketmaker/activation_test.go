@@ -80,3 +80,24 @@ func TestLiveReleaseCannotMutateInventoryOrPairPolicy(t *testing.T) {
 		t.Fatalf("live mutation: %v", err)
 	}
 }
+
+func TestInventoryLockKeysAreCanonical(t *testing.T) {
+	got := sortedInventoryLockTargets("z-account", []resolvedInventoryGrant{
+		{grant: InventoryGrant{SourceAccountID: "a-account"}, assetID: "asset-b"},
+		{grant: InventoryGrant{SourceAccountID: "z-account"}, assetID: "asset-a"},
+		{grant: InventoryGrant{SourceAccountID: "a-account"}, assetID: "asset-b"},
+	})
+	want := []inventoryLockTarget{
+		{accountID: "a-account", assetID: "asset-b"},
+		{accountID: "z-account", assetID: "asset-a"},
+		{accountID: "z-account", assetID: "asset-b"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("lock count=%d want %d", len(got), len(want))
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("lock order[%d]=%+v want %+v", i, got[i], want[i])
+		}
+	}
+}

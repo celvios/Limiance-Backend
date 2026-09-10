@@ -44,6 +44,19 @@ Final inspect task 55a0bcc070a7401d99cfb2e03adc1b2d and the readiness audit
 confirmed each latest action is enable. No withdrawal was initiated and issued
 test-money still creates no withdrawal entitlement.
 
+## Deterministic market-maker inventory locking (2026-09-10)
+
+Modified `internal/marketmaker/activation.go` and its unit test; no schema or API
+change. A funded dry-run approval now resolves every source/account/asset target
+before reading balances, deduplicates the complete lock set, sorts it by the
+canonical ledger account/asset key, and acquires the shared transaction locks
+before validating treasury availability or posting any inventory journal. This
+prevents an activation from racing another balance-changing operation and removes
+the previously documented lock-order gap. Focused market-maker and ledger tests,
+go vet and diff validation pass. The test proves destination/source deduplication
+and canonical ordering. This change allocates no inventory and does not authorize
+live trading.
+
 ## Approved policy
 
 - Named testers receive individually proposed, independently approved grants.

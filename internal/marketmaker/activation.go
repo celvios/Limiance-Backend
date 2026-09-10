@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/limiance/backend/internal/ledger"
 )
 
 var (
@@ -60,6 +62,32 @@ type ActivationRequest struct {
 	ProposedBy string    `json:"proposed_by"`
 	ApprovedBy string    `json:"approved_by,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
+}
+
+type resolvedInventoryGrant struct {
+	grant   InventoryGrant
+	assetID string
+}
+
+type inventoryLockTarget struct{ accountID, assetID string }
+
+func sortedInventoryLockTargets(destinationAccountID string, grants []resolvedInventoryGrant) []inventoryLockTarget {
+	byKey := make(map[string]inventoryLockTarget, len(grants)*2)
+	for _, item := range grants {
+		for _, target := range []inventoryLockTarget{{item.grant.SourceAccountID, item.assetID}, {destinationAccountID, item.assetID}} {
+			byKey[ledger.AccountAssetLockKey(target.accountID, target.assetID)] = target
+		}
+	}
+	keys := make([]string, 0, len(byKey))
+	for key := range byKey {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	targets := make([]inventoryLockTarget, 0, len(keys))
+	for _, key := range keys {
+		targets = append(targets, byKey[key])
+	}
+	return targets
 }
 
 type ActivationService struct{ pool *pgxpool.Pool }
@@ -229,8 +257,9 @@ func (s *ActivationService) applyDryRun(ctx context.Context, tx pgx.Tx, requestI
 	if err = applyPairPolicies(ctx, tx, input.Pairs); err != nil {
 		return err
 	}
+	resolved := make([]resolvedInventoryGrant, 0, len(input.Inventory))
 	for _, g := range input.Inventory {
-		var assetID, journalID string
+		var assetID string
 		var sourceOK bool
 		if err = tx.QueryRow(ctx, `SELECT id::text FROM assets WHERE symbol=$1 AND network=$2 AND status='enabled'`, strings.ToUpper(strings.TrimSpace(g.Asset)), strings.ToLower(strings.TrimSpace(g.Network))).Scan(&assetID); err != nil {
 			return ErrActivationState
@@ -238,6 +267,17 @@ func (s *ActivationService) applyDryRun(ctx context.Context, tx pgx.Tx, requestI
 		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM accounts WHERE id=$1 AND kind='system' AND status='active')`, g.SourceAccountID).Scan(&sourceOK); err != nil || !sourceOK {
 			return ErrActivationState
 		}
+		resolved = append(resolved, resolvedInventoryGrant{grant: g, assetID: assetID})
+	}
+	for _, target := range sortedInventoryLockTargets(accountID, resolved) {
+		if err = ledger.LockAccountAsset(ctx, tx, target.accountID, target.assetID); err != nil {
+			return err
+		}
+	}
+	for _, item := range resolved {
+		g, assetID := item.grant, item.assetID
+		var journalID string
+		var sourceOK bool
 		if err = tx.QueryRow(ctx, `SELECT COALESCE(SUM(CASE direction WHEN 'credit' THEN amount_atomic ELSE -amount_atomic END),0) >= $3::numeric FROM postings po JOIN journals j ON j.id=po.journal_id AND j.status='posted' WHERE po.account_id=$1 AND po.asset_id=$2 AND po.bucket='available'`, g.SourceAccountID, assetID, g.AmountAtomic).Scan(&sourceOK); err != nil || !sourceOK {
 			return fmt.Errorf("%w: insufficient approved treasury inventory", ErrActivationState)
 		}
