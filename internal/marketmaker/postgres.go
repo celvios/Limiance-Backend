@@ -81,9 +81,34 @@ func (store *PostgresStore) Risk(ctx context.Context, accountID, pair string) (R
 }
 
 func (store *PostgresStore) ClaimCommand(ctx context.Context, key, pair, side, price, quantity string, dryRun bool) (bool, error) {
-	result, err := store.pool.Exec(ctx, `INSERT INTO market_maker_command_log(idempotency_key,pair,side,price_atomic,quantity_atomic,dry_run)
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var enabled, configuredDryRun, killSwitch bool
+	if err = tx.QueryRow(ctx, `SELECT enabled,dry_run,kill_switch FROM market_maker_control
+		WHERE singleton=TRUE FOR SHARE`).Scan(&enabled, &configuredDryRun, &killSwitch); err != nil {
+		return false, err
+	}
+	if !enabled {
+		return false, ErrDisabled
+	}
+	if killSwitch {
+		return false, ErrKillSwitch
+	}
+	if configuredDryRun != dryRun {
+		return false, ErrRiskLimit
+	}
+	result, err := tx.Exec(ctx, `INSERT INTO market_maker_command_log(idempotency_key,pair,side,price_atomic,quantity_atomic,dry_run)
 		VALUES($1,$2,$3,$4::numeric,$5::numeric,$6) ON CONFLICT (idempotency_key) DO NOTHING`, key, pair, side, price, quantity, dryRun)
-	return result.RowsAffected() == 1, err
+	if err != nil {
+		return false, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return result.RowsAffected() == 1, nil
 }
 
 func (store *PostgresStore) AttachOrder(ctx context.Context, key, orderID string) error {

@@ -16,6 +16,10 @@ Date: 2026-09-10. Issuance and withdrawal controls are tested; live market-makin
   same-asset balance AND actual custody availability, including fee requirements.
 - Reject insufficient custody before broadcast. Release reservations only after
   confirmed non-submission; retain them while a provider outcome is unknown.
+- Normal withdrawals may submit automatically after all security, entitlement,
+  balance, custody-capacity and fee checks pass. A separate manual maker-checker
+  threshold for unusually large withdrawals will be defined before production;
+  no amount or threshold is implied by this staging plan.
 - No blanket withdrawal shutdown. Preserve legitimate deposits and withdrawals.
 
 ## Architecture and scope
@@ -85,6 +89,22 @@ The latest emergency stop was 2026-09-04 22:48:12.246544+00; 28 commands were
 recorded before the next activation at 22:54:21.197278+00. Therefore downstream
 command cessation is not proven. No custody withdrawal routes are configured.
 The current audit checklist item and every live-quoting/readiness gate remain open.
+
+## Emergency-stop command boundary fix (2026-09-10)
+
+Modified `internal/marketmaker/postgres.go` and
+`internal/integration/market_maker_test.go`. No schema change. Command claims now
+take a shared lock on the singleton market-maker control row and revalidate
+enabled, dry-run and kill-switch state inside the same transaction that appends
+the command log. Emergency stop updates the same row under an exclusive lock.
+Therefore a claim already holding the shared lock commits before the stop audit,
+while a claim behind the stop observes the kill switch and appends nothing.
+
+Focused unit tests pass. A real PostgreSQL concurrency test holds the stop-row
+lock, starts a competing command claim, commits the stop, then proves the claim
+returns ErrKillSwitch and no command record exists. Staging deployment and a
+fresh stop interval with zero post-stop commands are still required before the
+command-cessation checklist can be marked complete.
 
 ## Entitlement design
 
