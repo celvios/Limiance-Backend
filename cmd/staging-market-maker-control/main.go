@@ -1,5 +1,6 @@
 // staging-market-maker-control exercises the deployed emergency-stop boundary
-// and restores reference-only evaluation through the existing maker-checker flow.
+// and drives tightly scoped staging activation transitions through the existing
+// maker-checker flow.
 package main
 
 import (
@@ -36,7 +37,7 @@ type result struct {
 
 func main() {
 	var opt options
-	flag.StringVar(&opt.action, "action", "status", "status, stop, propose-resume, or approve-resume")
+	flag.StringVar(&opt.action, "action", "status", "status, stop, propose-resume, propose-funded-dry-run, approve-resume, or approve-request")
 	flag.StringVar(&opt.actorEmail, "actor-email", "", "active operator or approver email")
 	flag.StringVar(&opt.reason, "reason", "", "audited reason")
 	flag.StringVar(&opt.idempotencyKey, "idempotency-key", "", "payload-bound idempotency key")
@@ -81,7 +82,20 @@ func main() {
 				out.RequestID, out.RequestStatus = request.ID, request.Status
 			}
 		}
-	case "approve-resume":
+	case "propose-funded-dry-run":
+		var actorID string
+		actorID, err = resolveActor(ctx, pool, opt.actorEmail, "treasury_operator")
+		if err == nil {
+			var input marketmaker.ActivationInput
+			input, err = fundedDryRun(ctx, pool)
+			if err == nil {
+				input.Reason, input.IdempotencyKey = opt.reason, opt.idempotencyKey
+				var request marketmaker.ActivationRequest
+				request, err = service.Propose(ctx, actorID, input)
+				out.RequestID, out.RequestStatus = request.ID, request.Status
+			}
+		}
+	case "approve-resume", "approve-request":
 		var actorID string
 		actorID, err = resolveActor(ctx, pool, opt.actorEmail, "treasury_approver")
 		if err == nil {
@@ -113,7 +127,11 @@ func validateOptions(opt options) error {
 		if !opt.confirmStaging || opt.actorEmail == "" || len(strings.TrimSpace(opt.reason)) < 8 || opt.idempotencyKey == "" {
 			return errors.New("proposal requires confirmation, actor, reason and idempotency key")
 		}
-	case "approve-resume":
+	case "propose-funded-dry-run":
+		if !opt.confirmStaging || opt.actorEmail == "" || len(strings.TrimSpace(opt.reason)) < 8 || opt.idempotencyKey == "" {
+			return errors.New("funded dry-run proposal requires confirmation, actor, reason and idempotency key")
+		}
+	case "approve-resume", "approve-request":
 		if !opt.confirmStaging || opt.actorEmail == "" || opt.requestID == "" {
 			return errors.New("approval requires confirmation, actor and request ID")
 		}
@@ -121,6 +139,70 @@ func validateOptions(opt options) error {
 		return errors.New("unsupported action")
 	}
 	return nil
+}
+
+func fundedDryRun(ctx context.Context, pool *pgxpool.Pool) (marketmaker.ActivationInput, error) {
+	input, err := latestReferenceOnly(ctx, pool)
+	if err != nil {
+		return marketmaker.ActivationInput{}, err
+	}
+	pairs := make([]string, 0, len(input.Pairs))
+	for _, policy := range input.Pairs {
+		pairs = append(pairs, strings.ToUpper(strings.TrimSpace(policy.Pair)))
+	}
+	var matched int
+	if err = pool.QueryRow(ctx, `SELECT count(*)::int FROM trading_pairs WHERE symbol=ANY($1::text[])`, pairs).Scan(&matched); err != nil {
+		return marketmaker.ActivationInput{}, err
+	}
+	if matched != len(pairs) {
+		return marketmaker.ActivationInput{}, errors.New("reference-only policy contains an unknown pair")
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT DISTINCT a.symbol,a.network,a.status,t.id::text,
+			(SELECT COALESCE(SUM(CASE p.direction WHEN 'credit' THEN p.amount_atomic ELSE -p.amount_atomic END),0)::text
+			 FROM postings p JOIN journals j ON j.id=p.journal_id AND j.status='posted'
+			 WHERE p.account_id=t.id AND p.asset_id=a.id AND p.bucket='available')
+		FROM trading_pairs tp
+		JOIN assets a ON a.id=tp.base_asset_id OR a.id=tp.quote_asset_id
+		JOIN accounts t ON t.kind='system' AND t.name='staging-market-maker-treasury' AND t.status='active'
+		WHERE tp.symbol=ANY($1::text[])
+		ORDER BY a.symbol`, pairs)
+	if err != nil {
+		return marketmaker.ActivationInput{}, err
+	}
+	defer rows.Close()
+	input.Action = "configure_dry_run"
+	input.Inventory = nil
+	for rows.Next() {
+		var grant marketmaker.InventoryGrant
+		var assetStatus string
+		if err = rows.Scan(&grant.Asset, &grant.Network, &assetStatus, &grant.SourceAccountID, &grant.AmountAtomic); err != nil {
+			return marketmaker.ActivationInput{}, err
+		}
+		if grant.Network != "internal_spot" || assetStatus != "enabled" {
+			return marketmaker.ActivationInput{}, fmt.Errorf("required market asset %s is not an enabled internal spot asset", grant.Asset)
+		}
+		if !positiveAmount(grant.AmountAtomic) {
+			return marketmaker.ActivationInput{}, fmt.Errorf("approved treasury inventory is missing for %s", grant.Asset)
+		}
+		input.Inventory = append(input.Inventory, grant)
+	}
+	if err = rows.Err(); err != nil {
+		return marketmaker.ActivationInput{}, err
+	}
+	if len(input.Inventory) == 0 {
+		return marketmaker.ActivationInput{}, errors.New("approved treasury inventory is empty")
+	}
+	return input, nil
+}
+
+func positiveAmount(value string) bool {
+	for i, char := range value {
+		if char < '0' || char > '9' || (i == 0 && char == '0') {
+			return false
+		}
+	}
+	return value != ""
 }
 
 func resolveActor(ctx context.Context, pool *pgxpool.Pool, email, role string) (string, error) {

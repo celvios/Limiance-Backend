@@ -1,6 +1,43 @@
 # Staging test-money implementation plan
 
-Date: 2026-09-10. Issuance and withdrawal controls are tested; live market-making remains blocked by the readiness evidence below.
+Date: 2026-09-11. Issuance and withdrawal controls are tested; live market-making remains blocked by the readiness evidence below.
+
+## Funded market-maker dry-run bridge (2026-09-11)
+
+Why it matters: approved treasury issuance and the dedicated market-maker UTA
+were deliberately disconnected. This increment adds the missing audited transfer
+path while keeping the worker in dry-run, so no order can be submitted by it.
+
+Modified `cmd/staging-market-maker-control/main.go`, its unit test, and this plan.
+There is no schema or public API change. The new `propose-funded-dry-run` action
+is staging-only and requires explicit confirmation, the active treasury operator,
+an audited reason and a payload-bound idempotency key. It copies the latest
+approved 18-pair reference-only policy, resolves every required base/quote asset
+from PostgreSQL, requires each to be an enabled `internal_spot` asset, and uses
+only exact positive posted balances from the named
+`staging-market-maker-treasury` system account. The existing activation service
+rechecks the distinct approver, locks all source/destination account-asset pairs
+in canonical order, creates balanced allocation journals, and only then enables
+funded dry-run. `approve-request` exposes that existing generic approval safely;
+the emergency-stop and reference-only resume actions remain unchanged.
+
+Focused command and market-maker tests passed. The complete Go suite passed with
+the disposable PostgreSQL integration database enabled, followed by `go vet
+./...`. Tests prove fail-closed mutation arguments and exact unsigned atomic
+amount parsing; existing activation database/concurrency tests prove distinct
+maker-checker approval, atomic balanced allocation, insufficient-inventory
+rollback, idempotency, and deterministic shared ledger locking. This satisfies
+the funded dry-run allocation portion of the staging checklist. It does not
+activate a trading pair, emit a live order, or claim genuine matching/settlement.
+
+Deployment input is immutable treasury policy version 2, independently proposed
+by Toluk and approved by Favour at exactly 700,000 USDT. Eighteen base-asset
+grants plus the exact USDT remainder produced 19 balanced issuance journals.
+Their approval-time aggregate is 69,999,999,999,981 USDT atomic units, or
+699,999.99999981 USDT, leaving 19 atomic units below the hard ceiling. The
+treasury inspection confirmed all 19 required assets and the dedicated UTA
+`81040be9-3f64-4cd8-b986-5b312c69e017`; allocation and dry-run approval remain
+pending deployment of this increment.
 
 ## Staging emergency-stop proof command (2026-09-10)
 
