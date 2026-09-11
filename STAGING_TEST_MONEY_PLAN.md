@@ -745,3 +745,47 @@ This satisfies the bounded audited treasury-source portion of the staging
 inventory and ledger/idempotency acceptance items. It does not issue inventory,
 activate a pair, prove a real match/settlement/replay, or authorize live quoting.
 Deployment, explicit per-asset proposals and independent approvals remain next.
+
+## Versioned market-maker treasury limit evidence (2026-09-11)
+
+Task: replace the compiled 10,000-USDT treasury ceiling with an immutable,
+maker-checker-controlled versioned policy so the user-authorized 700,000-USDT
+staging allocation can be bounded and audited. This matters because changing a
+money-issuance limit must not be an unaudited deployment side effect.
+
+Created:
+
+- C:/Users/toluk/Desktop/Limiance Backend/migrations/000074_staging_market_maker_treasury_limits.up.sql
+- C:/Users/toluk/Desktop/Limiance Backend/migrations/000074_staging_market_maker_treasury_limits.down.sql
+
+Modified:
+
+- C:/Users/toluk/Desktop/Limiance Backend/internal/marketmaker/treasury.go
+- C:/Users/toluk/Desktop/Limiance Backend/internal/marketmaker/treasury_postgres_test.go
+- C:/Users/toluk/Desktop/Limiance Backend/cmd/staging-market-maker-inventory/main.go
+- C:/Users/toluk/Desktop/Limiance Backend/cmd/staging-market-maker-inventory/main_test.go
+- C:/Users/toluk/Desktop/Limiance Backend/STAGING_TEST_MONEY_PLAN.md
+
+Migration 000074 adds immutable limit requests and policies plus a singleton
+active-policy pointer. Version 1 bootstraps the prior exact 10,000-USDT ceiling;
+it does not raise the limit. A treasury operator proposes an exact scale-8 USDT
+limit and a different active treasury approver creates the next immutable policy
+version. Proposal and approval idempotency keys are payload-bound. Limit approval,
+grant valuation/quota consumption and the active-policy update share the same
+transactional advisory lock. A new limit below already-issued value is rejected.
+Every grant records the exact limit policy used in its immutable evidence.
+Audit and outbox events commit atomically with both limit workflow steps.
+
+The staging-only CLI now exposes propose-limit and approve-limit actions and its
+read-only inspection reports policy ID, version, exact limit and issued total.
+There is no HTTP route. The user-requested 700,000-USDT policy is not activated by
+the migration or deployment; Toluk must propose it and Favour must approve it.
+
+Tests prove bootstrap value, independent checker enforcement, exact proposal and
+approval replay, conflicting-key rejection, version advancement, policy-bound
+grant evidence, exact 700,000-USDT aggregate rejection, no lowering below issued
+value and immutable request/policy history against actual PostgreSQL migrations.
+Focused tests, serial vet and the full Go suite with PostgreSQL integration passed.
+This satisfies the versioned-limit, maker-checker, idempotency, append-only audit
+and exact-money portions of the inventory gate. It does not itself approve the
+700,000 limit, issue inventory, activate markets or prove execution/replay.

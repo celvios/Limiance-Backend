@@ -22,8 +22,8 @@ import (
 )
 
 type options struct {
-	action, actorEmail, asset, amountAtomic, reason, idempotencyKey, requestID string
-	confirmStaging                                                             bool
+	action, actorEmail, asset, amountAtomic, limitUSDTAtomic, reason, idempotencyKey, requestID string
+	confirmStaging                                                                              bool
 }
 
 type inventoryRow struct {
@@ -32,6 +32,9 @@ type inventoryRow struct {
 
 type inspection struct {
 	TreasuryAccountID     string         `json:"treasury_account_id,omitempty"`
+	LimitPolicyID         string         `json:"limit_policy_id"`
+	LimitVersion          int64          `json:"limit_version"`
+	LimitUSDTAtomic       string         `json:"limit_usdt_atomic"`
 	IssuedValueUSDTAtomic string         `json:"issued_value_usdt_atomic"`
 	Grants                []inventoryRow `json:"grants"`
 }
@@ -76,6 +79,18 @@ func main() {
 		if err == nil {
 			output, err = service.Approve(ctx, actorID, opt.requestID, opt.idempotencyKey)
 		}
+	case "propose-limit":
+		var actorID string
+		actorID, err = resolveActor(ctx, pool, opt.actorEmail, "treasury_operator")
+		if err == nil {
+			output, err = service.ProposeLimit(ctx, actorID, marketmaker.TreasuryLimitInput{LimitUSDTAtomic: opt.limitUSDTAtomic, Reason: opt.reason, IdempotencyKey: opt.idempotencyKey})
+		}
+	case "approve-limit":
+		var actorID string
+		actorID, err = resolveActor(ctx, pool, opt.actorEmail, "treasury_approver")
+		if err == nil {
+			output, err = service.ApproveLimit(ctx, actorID, opt.requestID, opt.idempotencyKey)
+		}
 	}
 	if err != nil {
 		fatal(err)
@@ -87,10 +102,11 @@ func main() {
 
 func parseOptions() options {
 	var o options
-	flag.StringVar(&o.action, "action", "inspect", "inspect, propose, or approve")
+	flag.StringVar(&o.action, "action", "inspect", "inspect, propose, approve, propose-limit, or approve-limit")
 	flag.StringVar(&o.actorEmail, "actor-email", "", "operator or approver email")
 	flag.StringVar(&o.asset, "asset", "", "internal spot symbol")
 	flag.StringVar(&o.amountAtomic, "amount-atomic", "", "exact integer amount")
+	flag.StringVar(&o.limitUSDTAtomic, "limit-usdt-atomic", "", "exact aggregate USDT-scale-8 ceiling")
 	flag.StringVar(&o.reason, "reason", "", "audited reason")
 	flag.StringVar(&o.idempotencyKey, "idempotency-key", "", "payload-bound key")
 	flag.StringVar(&o.requestID, "request-id", "", "proposal UUID")
@@ -111,6 +127,14 @@ func validateOptions(o options) error {
 	case "approve":
 		if !o.confirmStaging || o.actorEmail == "" || o.requestID == "" || o.idempotencyKey == "" {
 			return errors.New("approval requires confirmation, actor, request and idempotency key")
+		}
+	case "propose-limit":
+		if !o.confirmStaging || o.actorEmail == "" || o.limitUSDTAtomic == "" || len(strings.TrimSpace(o.reason)) < 8 || o.idempotencyKey == "" {
+			return errors.New("limit proposal requires confirmation, actor, exact limit, reason and idempotency key")
+		}
+	case "approve-limit":
+		if !o.confirmStaging || o.actorEmail == "" || o.requestID == "" || o.idempotencyKey == "" {
+			return errors.New("limit approval requires confirmation, actor, request and idempotency key")
 		}
 	default:
 		return errors.New("unsupported action")
@@ -161,6 +185,9 @@ func referenceSource(pool *pgxpool.Pool, cfg config.Config) (*testmoney.SpotRefe
 func inspect(ctx context.Context, pool *pgxpool.Pool) (inspection, error) {
 	out := inspection{Grants: []inventoryRow{}}
 	_ = pool.QueryRow(ctx, `SELECT id::text FROM accounts WHERE kind='system' AND name='staging-market-maker-treasury'`).Scan(&out.TreasuryAccountID)
+	if err := pool.QueryRow(ctx, `SELECT p.id::text,p.version,p.limit_usdt_atomic::text FROM staging_market_maker_treasury_limit_control c JOIN staging_market_maker_treasury_limit_policies p ON p.id=c.policy_id WHERE c.singleton`).Scan(&out.LimitPolicyID, &out.LimitVersion, &out.LimitUSDTAtomic); err != nil {
+		return out, err
+	}
 	rows, err := pool.Query(ctx, `SELECT r.id::text,a.symbol,r.amount_atomic::text,g.value_usdt_atomic::text,g.journal_id::text,g.created_at::text FROM staging_market_maker_treasury_grants g JOIN staging_market_maker_treasury_requests r ON r.id=g.request_id JOIN assets a ON a.id=r.asset_id ORDER BY a.symbol`)
 	if err != nil {
 		return out, err
